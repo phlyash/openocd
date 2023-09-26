@@ -34,6 +34,9 @@ NOR_DRIVERS = \
 	%D%/fm3.c \
 	%D%/fm4.c \
 	%D%/jtagspi.c \
+	%D%/k1921vk028.c \
+	%D%/k1921vk035.c \
+	%D%/k1921vg015.c \
 	%D%/kinetis.c \
 	%D%/kinetis_ke.c \
 	%D%/lpc2000.c \
