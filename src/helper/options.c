@@ -271,7 +271,9 @@ int parse_cmdline_args(struct command_context *cmd_ctx, int argc, char *argv[])
 		int option_index = 0;
 
 		c = getopt_long(argc, argv, "hvd::l:f:s:c:", long_options, &option_index);
-
+		for(int i=0;i<argc+1;i++){
+			LOG_DEBUG(" %s:", argv[i]);
+		}
 		/* Detect the end of the options. */
 		if (c == -1)
 			break;
@@ -288,6 +290,7 @@ int parse_cmdline_args(struct command_context *cmd_ctx, int argc, char *argv[])
 			case 'f':		/* --file | -f */
 			{
 				char *command = alloc_printf("script {%s}", optarg);
+				LOG_DEBUG("COMMAND %s:", command);
 				add_config_command(command);
 				free(command);
 				break;

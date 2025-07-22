@@ -1,7 +1,7 @@
 /**
  * \file
- * \brief           k1921vg015 flash driver
- * \copyright       DC Vostok, Vladivostok 2023
+ * \brief           k1921vg7t flash driver
+ * \copyright       NIIET, 2025
  */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -15,57 +15,57 @@
 #define FLASH_DRIVER_VER    0x00010000
 
 /*==============================================================================
- *                    K1921VG015 CONTROL REGS
+ *                    K1921VG7T CONTROL REGS
  *==============================================================================
  */
-/*-- PMUSYS ---------------------------------------------------------------------*/
-#define PMUSYS_CHIPID_K1921VG015   0xdeadbee0
-#define PMUSYS_BASE                0x3000F000
-#define PMUSYS_SERVCTL             (PMUSYS_BASE + 0x104)
-#define PMUSYS_CHIPID              (PMUSYS_BASE + 0x100)
-/*---- PMUSYS->SERVCTL: Service mode control register */
-#define PMUSYS_SERVCTL_DONE        (1<<8)              /* Full clear done flag */
-#define PMUSYS_SERVCTL_SERVEN      (1<<0)             /* Service mode enable flag */
+/*-- SIU ---------------------------------------------------------------------*/
+#define SIU_CHIPID_K1921VG7T    0x04e4c401
+#define SIU_BASE                0x50003000
+#define SIU_SERVCTL             (SIU_BASE + 0x04)
+#define SIU_CHIPID              (SIU_BASE + 0x00)
+/*---- SIU->SERVCTL: Service mode control register */
+#define SIU_SERVCTL_DONE        (1<<8)              /* Full clear done flag */
+#define SIU_SERVCTL_SERVEN      (1<<0)             /* Service mode enable flag */
 
 #define MAIN_REGION             0
 #define NVR_REGION              1
-/*-- MFLASH ------------------------------------------------------------------*/
-#define MFLASH_PAGE_SIZE        4096
-#define MFLASH_PAGE_TOTAL       256
-#define MFLASH_WORD_WIDTH       4
-#define MFLASH_BASE             0x3000D000
-#define MFLASH_BANK_ADDR        0x80000000
+/*-- FLASH ------------------------------------------------------------------*/
+#define FLASH_PAGE_SIZE        1024
+#define FLASH_PAGE_TOTAL       512
+#define FLASH_WORD_WIDTH       2
+#define FLASH_BASE             0x50002000
+#define FLASH_BANK_ADDR        0x00000000
 
-#define MFLASH_ADDR             (MFLASH_BASE + 0x00)
-#define MFLASH_DATA0            (MFLASH_BASE + 0x04)
-#define MFLASH_DATA1            (MFLASH_BASE + 0x08)
-#define MFLASH_DATA2            (MFLASH_BASE + 0x0C)
-#define MFLASH_DATA3            (MFLASH_BASE + 0x10)
-#define MFLASH_CMD              (MFLASH_BASE + 0x44)
-#define MFLASH_STAT             (MFLASH_BASE + 0x48)
+#define FLASH_ADDR             (FLASH_BASE + 0x00)
+#define FLASH_DATA0            (FLASH_BASE + 0x10)
+#define FLASH_DATA1            (FLASH_BASE + 0x14)
+#define FLASH_CMD              (FLASH_BASE + 0x40)
+#define FLASH_STAT             (FLASH_BASE + 0x44)
 
-/*---- MFLASH->CMD: Command register */
-#define MFLASH_CMD_RD           (1<<0)              /* Read data in region */
-#define MFLASH_CMD_WR           (1<<1)              /* Write data in region */
-#define MFLASH_CMD_ERSEC        (1<<2)              /* Sector erase in region */
-#define MFLASH_CMD_ERALL        (1<<3)              /* Erase all sectors in region */
-#define MFLASH_CMD_NVRON        (1<<8)              /* Select NVR region for command operation */
-#define MFLASH_CMD_KEY          (0xC0DE<<16)        /* Command enable key */
-/*---- MFLASH->STAT: Status register */
-#define MFLASH_STAT_BUSY        (1<<0)              /* Flag operation busy */
+/*---- FLASH->CMD: Command register */
+#define FLASH_CMD_RD           (1<<0)              /* Read data in region */
+#define FLASH_CMD_WR           (1<<1)              /* Write data in region */
+#define FLASH_CMD_ERSEC        (1<<2)              /* Sector erase in region */
+#define FLASH_CMD_ERALL        (1<<3)              /* Erase all sectors in region */
+#define FLASH_CMD_DPD          (1<<4)              /* Enter/Exit power down mode */ 
+#define FLASH_CMD_NVRON        (1<<8)              /* Select NVR region for command operation */
+#define FLASH_CMD_KEY          (0xC0DE<<16)        /* Command enable key */
+/*---- FLASH->STAT: Status register */
+#define FLASH_STAT_BUSY        (1<<0)              /* Flag operation busy */
 
-/*---- CFGWORD (in MFLASH NVR)----------------------------------------------- */
-#define CFGWORD_PAGE                1
-#define CFGWORD_ADDR_OFFSET         0xFF0
-#define CFGWORD_ADDR                (MFLASH_PAGE_SIZE*CFGWORD_PAGE+CFGWORD_ADDR_OFFSET)
+/*---- CFGWORD (in FLASH NVR)----------------------------------------------- */
+#define CFGWORD_PAGE                15
+#define CFGWORD_ADDR_OFFSET         0x3F0
+#define CFGWORD_ADDR                (FLASH_PAGE_SIZE*CFGWORD_PAGE+CFGWORD_ADDR_OFFSET)
+//#define CFGWORD_ADDR                0x3FF8 
 #define CFGWORD_JTAGEN              (1<<2)          /* Enable JTAG interface */
-#define CFGWORD_CFGWE               (1<<1)          /* MFLASH NVR region write enable */
-#define CFGWORD_FLASHWE             (1<<0)          /* MFLASH main region write enable */
+#define CFGWORD_CFGWE               (1<<1)          /* FLASH NVR region write enable */
+#define CFGWORD_FLASHWE             (1<<0)          /* FLASH main region write enable */
 
 /**
  * Private data for flash driver.
  */
-struct k1921vg015_flash_bank {
+struct k1921vg7t_flash_bank {
 	/* target params */
 	bool probed;
 	char *chip_name;
@@ -83,18 +83,18 @@ struct k1921vg015_flash_bank {
 /**
  * Wait while operation with flash being performed
  */
-static int k1921vg015_flash_waitdone(struct target *target)
+static int k1921vg7t_flash_waitdone(struct target *target)
 {
 	int retval;
 	int timeout = 5000;
 
 	uint32_t flash_status;
-	retval = target_read_u32(target, MFLASH_STAT, &flash_status);
+	retval = target_read_u32(target, FLASH_STAT, &flash_status);
 	if (retval != ERROR_OK)
 		return retval;
 
-	while ((flash_status & MFLASH_STAT_BUSY) == MFLASH_STAT_BUSY) {
-		retval = target_read_u32(target, MFLASH_STAT, &flash_status);
+	while ((flash_status & FLASH_STAT_BUSY) == FLASH_STAT_BUSY) {
+		retval = target_read_u32(target, FLASH_STAT, &flash_status);
 		if (retval != ERROR_OK)
 			return retval;
 		if (timeout-- <= 0) {
@@ -110,21 +110,21 @@ static int k1921vg015_flash_waitdone(struct target *target)
 /**
  * Erase flash sector
  */
-static int k1921vg015_flash_erase(struct target *target, int page_num, uint32_t region)
+static int k1921vg7t_flash_erase(struct target *target, int page_num, uint32_t region)
 {
 	int retval = ERROR_OK;
 
-	uint32_t flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_ERSEC;
+	uint32_t flash_cmd = FLASH_CMD_KEY | FLASH_CMD_ERSEC;
 	if (region == NVR_REGION)
-		flash_cmd |= MFLASH_CMD_NVRON;
+		flash_cmd |= FLASH_CMD_NVRON;
 
-	retval = target_write_u32(target, MFLASH_ADDR, page_num*MFLASH_PAGE_SIZE);
+	retval = target_write_u32(target, FLASH_ADDR, page_num*FLASH_PAGE_SIZE);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = target_write_u32(target, MFLASH_CMD, flash_cmd);
+	retval = target_write_u32(target, FLASH_CMD, flash_cmd);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = k1921vg015_flash_waitdone(target);
+	retval = k1921vg7t_flash_waitdone(target);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -134,18 +134,18 @@ static int k1921vg015_flash_erase(struct target *target, int page_num, uint32_t 
 /**
  * Mass flash erase
  */
-static int k1921vg015_flash_mass_erase(struct target *target, uint32_t region)
+static int k1921vg7t_flash_mass_erase(struct target *target, uint32_t region)
 {
 	int retval = ERROR_OK;
 
-	uint32_t flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_ERALL| MFLASH_CMD_ERSEC;
+	uint32_t flash_cmd = FLASH_CMD_KEY | FLASH_CMD_ERALL| FLASH_CMD_ERSEC;
 	if (region == NVR_REGION)
-		flash_cmd |= MFLASH_CMD_NVRON;
+		flash_cmd |= FLASH_CMD_NVRON;
 
-	retval = target_write_u32(target, MFLASH_CMD, flash_cmd);
+	retval = target_write_u32(target, FLASH_CMD, flash_cmd);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = k1921vg015_flash_waitdone(target);
+	retval = k1921vg7t_flash_waitdone(target);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -155,25 +155,25 @@ static int k1921vg015_flash_mass_erase(struct target *target, uint32_t region)
 /**
  * Read flash address
  */
-static int k1921vg015_flash_read(struct target *target, uint32_t addr, uint32_t *data, uint32_t region)
+static int k1921vg7t_flash_read(struct target *target, uint32_t addr, uint32_t *data, uint32_t region)
 {
 	int retval = ERROR_OK;
 
-	uint32_t flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_RD;
+	uint32_t flash_cmd = FLASH_CMD_KEY | FLASH_CMD_RD;
 	if (region == NVR_REGION)
-		flash_cmd |= MFLASH_CMD_NVRON;
+		flash_cmd |= FLASH_CMD_NVRON;
 
-	retval = target_write_u32(target, MFLASH_ADDR, addr);
+	retval = target_write_u32(target, FLASH_ADDR, addr);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = target_write_u32(target, MFLASH_CMD, flash_cmd);
+	retval = target_write_u32(target, FLASH_CMD, flash_cmd);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = k1921vg015_flash_waitdone(target);
+	retval = k1921vg7t_flash_waitdone(target);
 	if (retval != ERROR_OK)
 		return retval;
-	for (int i = 0; i < MFLASH_WORD_WIDTH; i++) {
-		retval = target_read_u32(target, MFLASH_DATA0 + i*4, &data[i]);
+	for (int i = 0; i < FLASH_WORD_WIDTH; i++) {
+		retval = target_read_u32(target, FLASH_DATA0 + i*4, &data[i]);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -184,26 +184,26 @@ static int k1921vg015_flash_read(struct target *target, uint32_t addr, uint32_t 
 /**
  * Write flash address
  */
-static int k1921vg015_flash_write(struct target *target, uint32_t addr, uint32_t *data, uint32_t region)
+static int k1921vg7t_flash_write(struct target *target, uint32_t addr, uint32_t *data, uint32_t region)
 {
 	int retval = ERROR_OK;
 
-	uint32_t flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_WR;
+	uint32_t flash_cmd = FLASH_CMD_KEY | FLASH_CMD_WR;
 	if (region == NVR_REGION)
-		flash_cmd |= MFLASH_CMD_NVRON;
+		flash_cmd |= FLASH_CMD_NVRON;
 
-	retval = target_write_u32(target, MFLASH_ADDR, addr);
+	retval = target_write_u32(target, FLASH_ADDR, addr);
 	if (retval != ERROR_OK)
 		return retval;
-	for (int i = 0; i < MFLASH_WORD_WIDTH; i++) {
-		retval = target_write_u32(target, MFLASH_DATA0 + i*4, data[i]);
+	for (int i = 0; i < FLASH_WORD_WIDTH; i++) {
+		retval = target_write_u32(target, FLASH_DATA0 + i*4, data[i]);
 		if (retval != ERROR_OK)
 			return retval;
 	}
-	retval = target_write_u32(target, MFLASH_CMD, flash_cmd);
+	retval = target_write_u32(target, FLASH_CMD, flash_cmd);
 	if (retval != ERROR_OK)
 		return retval;
-	retval = k1921vg015_flash_waitdone(target);
+	retval = k1921vg7t_flash_waitdone(target);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -213,20 +213,20 @@ static int k1921vg015_flash_write(struct target *target, uint32_t addr, uint32_t
 /**
  * Dump flash sector.
  */
-static int k1921vg015_flash_sector_dump(struct target *target, uint32_t *dump, int page_num, uint32_t region)
+static int k1921vg7t_flash_sector_dump(struct target *target, uint32_t *dump, int page_num, uint32_t region)
 {
 	int retval = ERROR_OK;
 
-	uint32_t data[MFLASH_WORD_WIDTH];
-	int first = page_num * MFLASH_PAGE_SIZE;
-	int last = first + MFLASH_PAGE_SIZE;
+	uint32_t data[FLASH_WORD_WIDTH];
+	int first = page_num * FLASH_PAGE_SIZE;
+	int last = first + FLASH_PAGE_SIZE;
 
-	for (int i = first; i < last; i+=MFLASH_WORD_WIDTH*4) {
-		retval = k1921vg015_flash_read(target, i, data, region);
+	for (int i = first; i < last; i+=FLASH_WORD_WIDTH*4) {
+		retval = k1921vg7t_flash_read(target, i, data, region);
 		if (retval != ERROR_OK)
 			return retval;
-		for (int j = 0; j < MFLASH_WORD_WIDTH; j++) {
-			dump[(i%MFLASH_PAGE_SIZE)/4+j] = data[j];
+		for (int j = 0; j < FLASH_WORD_WIDTH; j++) {
+			dump[(i%FLASH_PAGE_SIZE)/4+j] = data[j];
 		}
 	}
 
@@ -236,24 +236,24 @@ static int k1921vg015_flash_sector_dump(struct target *target, uint32_t *dump, i
 /**
  * Load flash sector dump back to memory
  */
-static int k1921vg015_flash_sector_load(struct target *target, uint32_t *dump, int page_num, uint32_t region)
+static int k1921vg7t_flash_sector_load(struct target *target, uint32_t *dump, int page_num, uint32_t region)
 {
 	int i;
 	int retval = ERROR_OK;
 
-	uint32_t data[MFLASH_WORD_WIDTH];
-	int first = page_num*MFLASH_PAGE_SIZE;
-	int last = first + MFLASH_PAGE_SIZE;
+	uint32_t data[FLASH_WORD_WIDTH];
+	int first = page_num*FLASH_PAGE_SIZE;
+	int last = first + FLASH_PAGE_SIZE;
 
-	retval = k1921vg015_flash_erase(target, page_num, region);
+	retval = k1921vg7t_flash_erase(target, page_num, region);
 	if (retval != ERROR_OK)
 		return retval;
 
-	for (i = first; i < last; i+=MFLASH_WORD_WIDTH*4) {
-		for (int j = 0; j < MFLASH_WORD_WIDTH; j++) {
-			data[j] = dump[(i%MFLASH_PAGE_SIZE)/4+j];
+	for (i = first; i < last; i+=FLASH_WORD_WIDTH*4) {
+		for (int j = 0; j < FLASH_WORD_WIDTH; j++) {
+			data[j] = dump[(i%FLASH_PAGE_SIZE)/4+j];
 		}
-		retval = k1921vg015_flash_write(target, i, data, region);
+		retval = k1921vg7t_flash_write(target, i, data, region);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -264,13 +264,13 @@ static int k1921vg015_flash_sector_load(struct target *target, uint32_t *dump, i
 /**
  * Read CFGWORD
  */
-static int k1921vg015_flash_read_cfgword(struct target *target, uint32_t *cfgword)
+static int k1921vg7t_flash_read_cfgword(struct target *target, uint32_t *cfgword)
 {
 	int retval = ERROR_OK;
 
-	uint32_t data[MFLASH_WORD_WIDTH];
+	uint32_t data[FLASH_WORD_WIDTH];
 
-	retval = k1921vg015_flash_read(target, CFGWORD_ADDR, data, NVR_REGION);
+	retval = k1921vg7t_flash_read(target, CFGWORD_ADDR, data, NVR_REGION);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -282,13 +282,13 @@ static int k1921vg015_flash_read_cfgword(struct target *target, uint32_t *cfgwor
 /**
  * Modify CFGWORD
  */
-static int k1921vg015_flash_modify_cfgword(struct target *target, uint32_t enable, uint32_t param_mask)
+static int k1921vg7t_flash_modify_cfgword(struct target *target, uint32_t enable, uint32_t param_mask)
 {
 	int retval = ERROR_OK;
 
 	/* dump */
-	uint32_t flash_dump[MFLASH_PAGE_SIZE/4];
-	retval = k1921vg015_flash_sector_dump(target, flash_dump, CFGWORD_PAGE, NVR_REGION);
+	uint32_t flash_dump[FLASH_PAGE_SIZE/4];
+	retval = k1921vg7t_flash_sector_dump(target, flash_dump, CFGWORD_PAGE, NVR_REGION);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -299,7 +299,7 @@ static int k1921vg015_flash_modify_cfgword(struct target *target, uint32_t enabl
 		flash_dump[CFGWORD_ADDR_OFFSET/4] |= param_mask;
 
 	/* write dump to flash */
-	retval = k1921vg015_flash_sector_load(target, flash_dump, CFGWORD_PAGE, NVR_REGION);
+	retval = k1921vg7t_flash_sector_load(target, flash_dump, CFGWORD_PAGE, NVR_REGION);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -310,7 +310,7 @@ static int k1921vg015_flash_modify_cfgword(struct target *target, uint32_t enabl
  *                          FLASH DRIVER COMMANDS
  *==============================================================================
  */
-COMMAND_HANDLER(k1921vg015_handle_read_command)
+COMMAND_HANDLER(k1921vg7t_handle_read_command)
 {
 	if (CMD_ARGC < 2)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -332,26 +332,22 @@ COMMAND_HANDLER(k1921vg015_handle_read_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	uint32_t flash_addr;
-	uint32_t flash_data[MFLASH_WORD_WIDTH];
+	uint32_t flash_data[FLASH_WORD_WIDTH];
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], flash_addr);
 
-	retval = k1921vg015_flash_read(target, flash_addr, flash_data, region);
+	retval = k1921vg7t_flash_read(target, flash_addr, flash_data, region);
 	if (retval != ERROR_OK)
 		return retval;
-	command_print(CMD,  "Read MFLASH %s region:\n"
-							"    addr = 0x%04x, data = 0x%04x\n"
-							"    addr = 0x%04x, data = 0x%04x\n"
+	command_print(CMD,  "Read FLASH %s region:\n"
 							"    addr = 0x%04x, data = 0x%04x\n"
 							"    addr = 0x%04x, data = 0x%04x", 
 							(region == NVR_REGION) ? "nvr" : "main",
 							flash_addr,   flash_data[0],
-							flash_addr+4, flash_data[1],
-							flash_addr+8,   flash_data[2],
-							flash_addr+12, flash_data[3]);
+							flash_addr+4, flash_data[1]);
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_write_command)
+COMMAND_HANDLER(k1921vg7t_handle_write_command)
 {
 	if (CMD_ARGC < 5)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -390,49 +386,43 @@ COMMAND_HANDLER(k1921vg015_handle_write_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	uint32_t flash_addr;
-	uint32_t flash_data[MFLASH_WORD_WIDTH];
+	uint32_t flash_data[FLASH_WORD_WIDTH];
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[2], flash_addr);
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[3], flash_data[0]);
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[4], flash_data[1]);
-	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[5], flash_data[2]);
-	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[6], flash_data[3]);
 
-	int page_num = flash_addr/MFLASH_PAGE_SIZE;
+	int page_num = flash_addr/FLASH_PAGE_SIZE;
 
-	command_print(CMD, "Write MFLASH %s region%s:\n"
-						   "    addr = 0x%04x, data = 0x%04x,\n"
-						   "    addr = 0x%04x, data = 0x%04x,\n"
+	command_print(CMD, "Write FLASH %s region%s:\n"
 						   "    addr = 0x%04x, data = 0x%04x,\n"
 						   "    addr = 0x%04x, data = 0x%04x,\n"
 						   "    Please wait ... ", (region == NVR_REGION) ? "nvr" : "main",
 												   save_sector ? " (save sector data)" :
 																 erase_sector ? " (erase sector data)" : "",
 												   flash_addr,   flash_data[0],
-												   flash_addr+4, flash_data[1],
-												   flash_addr+8,   flash_data[2],
-												   flash_addr+12, flash_data[3]);
+												   flash_addr+4, flash_data[1]);
 	if (save_sector) {
 		/* dump */
-		uint32_t flash_dump[MFLASH_PAGE_SIZE];
-		retval = k1921vg015_flash_sector_dump(target, flash_dump, page_num, region);
+		uint32_t flash_dump[FLASH_PAGE_SIZE];
+		retval = k1921vg7t_flash_sector_dump(target, flash_dump, page_num, region);
 		if (retval != ERROR_OK)
 			return retval;
 
 		/* modify dump */
-		flash_dump[(flash_addr%MFLASH_PAGE_SIZE)/4]   = flash_data[0];
-		flash_dump[(flash_addr%MFLASH_PAGE_SIZE)/4+1] = flash_data[1];
+		flash_dump[(flash_addr%FLASH_PAGE_SIZE)/4]   = flash_data[0];
+		flash_dump[(flash_addr%FLASH_PAGE_SIZE)/4+1] = flash_data[1];
 
 		/* write dump to userflash */
-		retval = k1921vg015_flash_sector_load(target, flash_dump, page_num, region);
+		retval = k1921vg7t_flash_sector_load(target, flash_dump, page_num, region);
 		if (retval != ERROR_OK)
 			return retval;
 	} else {
 		if (erase_sector) {
-			retval = k1921vg015_flash_erase(target, page_num, region);
+			retval = k1921vg7t_flash_erase(target, page_num, region);
 			if (retval != ERROR_OK)
 				return retval;
 		}
-		retval = k1921vg015_flash_write(target, flash_addr, flash_data, region);
+		retval = k1921vg7t_flash_write(target, flash_addr, flash_data, region);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -442,7 +432,7 @@ COMMAND_HANDLER(k1921vg015_handle_write_command)
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_mass_erase_command)
+COMMAND_HANDLER(k1921vg7t_handle_mass_erase_command)
 {
 	if (CMD_ARGC < 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -463,10 +453,10 @@ COMMAND_HANDLER(k1921vg015_handle_mass_erase_command)
 	else
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	command_print(CMD, "Mass erase MFLASH %s region\n"
+	command_print(CMD, "Mass erase FLASH %s region\n"
 						   "Please wait ... ", (region == NVR_REGION) ? "nvr" : "main");
 
-	retval = k1921vg015_flash_mass_erase(target, region);
+	retval = k1921vg7t_flash_mass_erase(target, region);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -475,7 +465,7 @@ COMMAND_HANDLER(k1921vg015_handle_mass_erase_command)
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_erase_command)
+COMMAND_HANDLER(k1921vg7t_handle_erase_command)
 {
 	if (CMD_ARGC < 3)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -500,11 +490,11 @@ COMMAND_HANDLER(k1921vg015_handle_erase_command)
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[1], first);
 	COMMAND_PARSE_NUMBER(uint, CMD_ARGV[2], last);
 
-	command_print(CMD, "Erase MFLASH %s region sectors %d through %d\n"
+	command_print(CMD, "Erase FLASH %s region sectors %d through %d\n"
 						   "Please wait ... ", (region == NVR_REGION) ? "nvr" : "main", first, last);
 
 	for (unsigned int i = first; i <= last; i++) {
-		retval = k1921vg015_flash_erase(target, i, region);
+		retval = k1921vg7t_flash_erase(target, i, region);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -514,7 +504,7 @@ COMMAND_HANDLER(k1921vg015_handle_erase_command)
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_protect_command)
+COMMAND_HANDLER(k1921vg7t_handle_protect_command)
 {
 	if (CMD_ARGC < 2)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -544,12 +534,12 @@ COMMAND_HANDLER(k1921vg015_handle_protect_command)
 	else
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	command_print(CMD, "Try to %s MFLASH %s region write protection\n"
+	command_print(CMD, "Try to %s FLASH %s region write protection\n"
 						   "Please wait ... ", protect_enable ? "enable" : "disable",
 											   (region == NVR_REGION) ? "NVR" : "main");
 
 	uint32_t param_mask = (region == NVR_REGION) ? CFGWORD_CFGWE : CFGWORD_FLASHWE;
-	retval = k1921vg015_flash_modify_cfgword(target, protect_enable, param_mask);
+	retval = k1921vg7t_flash_modify_cfgword(target, protect_enable, param_mask);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -558,7 +548,7 @@ COMMAND_HANDLER(k1921vg015_handle_protect_command)
 }
 
 
-COMMAND_HANDLER(k1921vg015_handle_jtag_command)
+COMMAND_HANDLER(k1921vg7t_handle_jtag_command)
 {
 	if (CMD_ARGC < 1)
 		return ERROR_COMMAND_SYNTAX_ERROR;
@@ -583,7 +573,7 @@ COMMAND_HANDLER(k1921vg015_handle_jtag_command)
 						   "Please wait ... ", jtag_enable ? "enable" : "disable");
 
 	uint32_t param_mask = CFGWORD_JTAGEN;
-	retval = k1921vg015_flash_modify_cfgword(target, jtag_enable, param_mask);
+	retval = k1921vg7t_flash_modify_cfgword(target, jtag_enable, param_mask);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -591,7 +581,7 @@ COMMAND_HANDLER(k1921vg015_handle_jtag_command)
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_srv_erase_command)
+COMMAND_HANDLER(k1921vg7t_handle_srv_erase_command)
 {
 	int retval;
 	struct target *target = get_current_target(CMD_CTX);
@@ -604,24 +594,24 @@ COMMAND_HANDLER(k1921vg015_handle_srv_erase_command)
 	command_print(CMD, "Try to perform service mode erase - all flash memories will be erased\n"
 						   "Please wait ... ");
 
-	retval = target_write_u32(target, PMUSYS_SERVCTL, PMUSYS_SERVCTL_DONE);
+	retval = target_write_u32(target, SIU_SERVCTL, SIU_SERVCTL_DONE);
 	if (retval != ERROR_OK)
 		return retval;
 
 	int timeout = 500;
 	uint32_t status;
 
-	retval = target_read_u32(target, PMUSYS_SERVCTL, &status);
+	retval = target_read_u32(target, SIU_SERVCTL, &status);
 	if (retval != ERROR_OK)
 		return retval;
 
-	if((status & PMUSYS_SERVCTL_SERVEN) != PMUSYS_SERVCTL_SERVEN){
+	if((status & SIU_SERVCTL_SERVEN) != SIU_SERVCTL_SERVEN){
 		LOG_ERROR("Service mode erase turned off, SERVEN is HIGH. Operation failed.");
 		return ERROR_FLASH_OPERATION_FAILED;
 	}
 
-	while ((status & PMUSYS_SERVCTL_DONE) != PMUSYS_SERVCTL_DONE) {
-		retval = target_read_u32(target, PMUSYS_SERVCTL, &status);
+	while ((status & SIU_SERVCTL_DONE) != SIU_SERVCTL_DONE) {
+		retval = target_read_u32(target, SIU_SERVCTL, &status);
 		if (retval != ERROR_OK)
 			return retval;
 		if (timeout-- <= 0) {
@@ -635,72 +625,72 @@ COMMAND_HANDLER(k1921vg015_handle_srv_erase_command)
 	return retval;
 }
 
-COMMAND_HANDLER(k1921vg015_handle_driver_info_command)
+COMMAND_HANDLER(k1921vg7t_handle_driver_info_command)
 {
 	int retval = ERROR_OK;
 
-	command_print(CMD, "k1921vg015 flash driver\n"
+	command_print(CMD, "k1921vg7t flash driver\n"
 						   "version: %d.%d\n"
-						   "copyright: DC Vostok, Vladivostok 2023\n",
+						   "copyright: AO NIIET, 2025\n",
 						   FLASH_DRIVER_VER>>16,
 						   FLASH_DRIVER_VER&0xFFFF);
 
 	return retval;
 }
 
-static const struct command_registration k1921vg015_exec_command_handlers[] = {
+static const struct command_registration k1921vg7t_exec_command_handlers[] = {
 	{
 		.name = "read",
-		.handler = k1921vg015_handle_read_command,
+		.handler = k1921vg7t_handle_read_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(main|nvr) address",
-		.help = "Read two 32-bit words from MFLASH main or NVR region address. Address should be 8 bytes aligned.",
+		.help = "Read two 32-bit words from FLASH main or NVR region address. Address should be 8 bytes aligned.",
 	},
 	{
 		.name = "write",
-		.handler = k1921vg015_handle_write_command,
+		.handler = k1921vg7t_handle_write_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(main|nvr) (erase|save|none) address data0 data1 data2 data3",
-		.help = "Write two 32-bit words to MFLASH main or NVR region address. Address should be 8 bytes aligned. There is option that selects between to erase modified sector, to save all data and to do nothing - only write.",
+		.help = "Write two 32-bit words to FLASH main or NVR region address. Address should be 8 bytes aligned. There is option that selects between to erase modified sector, to save all data and to do nothing - only write.",
 	},
 	{
 		.name = "mass_erase",
-		.handler = k1921vg015_handle_mass_erase_command,
+		.handler = k1921vg7t_handle_mass_erase_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(main|nvr)",
-		.help = "Erase entire MFLASH main or NVR region",
+		.help = "Erase entire FLASH main or NVR region",
 	},
 	{
 		.name = "erase",
-		.handler = k1921vg015_handle_erase_command,
+		.handler = k1921vg7t_handle_erase_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(main|nvr) first_sector_num last_sector_num",
-		.help = "Erase sectors of MFLASH main or NVR region, starting at sector first up to and including last",
+		.help = "Erase sectors of FLASH main or NVR region, starting at sector first up to and including last",
 	},
 	{
 		.name = "protect",
-		.handler = k1921vg015_handle_protect_command,
+		.handler = k1921vg7t_handle_protect_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(main|nvr) (enable|disable)",
-		.help = "MFLASH main or NVR region write protect control. Power on reset cycle is required for the new settings to take effect.",
+		.help = "FLASH main or NVR region write protect control. Power on reset cycle is required for the new settings to take effect.",
 	},
 	{
 		.name = "jtag",
-		.handler = k1921vg015_handle_jtag_command,
+		.handler = k1921vg7t_handle_jtag_command,
 		.mode = COMMAND_EXEC,
 		.usage = "(enable|disable)",
 		.help = "Control JTAG interface. Power on reset cycle is required for the new settings to take effect.",
 	},
 	{
 		.name = "srv_erase",
-		.handler = k1921vg015_handle_srv_erase_command,
+		.handler = k1921vg7t_handle_srv_erase_command,
 		.mode = COMMAND_EXEC,
 		.usage = "",
 		.help = "Perform mass erase of all chip flash memories. Power on reset cycle and SERVEN pin tied low are required for the return to normal operation mode.",
 	},
 	{
 		.name = "driver_info",
-		.handler = k1921vg015_handle_driver_info_command,
+		.handler = k1921vg7t_handle_driver_info_command,
 		.mode = COMMAND_EXEC,
 		.usage = "",
 		.help = "Show information about flash driver",
@@ -708,13 +698,13 @@ static const struct command_registration k1921vg015_exec_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
-static const struct command_registration k1921vg015_command_handlers[] = {
+static const struct command_registration k1921vg7t_command_handlers[] = {
 	{
-		.name = "k1921vg015",
+		.name = "k1921vg7t",
 		.mode = COMMAND_ANY,
-		.help = "k1921vg015 flash command group",
+		.help = "k1921vg7t flash command group",
 		.usage = "",
-		.chain = k1921vg015_exec_command_handlers,
+		.chain = k1921vg7t_exec_command_handlers,
 	},
 	COMMAND_REGISTRATION_DONE
 };
@@ -724,33 +714,33 @@ static const struct command_registration k1921vg015_command_handlers[] = {
  *==============================================================================
  */
 
-FLASH_BANK_COMMAND_HANDLER(k1921vg015_flash_bank_command)
+FLASH_BANK_COMMAND_HANDLER(k1921vg7t_flash_bank_command)
 {
-	struct k1921vg015_flash_bank *k1921vg015_info;
+	struct k1921vg7t_flash_bank *k1921vg7t_info;
 
 	if (CMD_ARGC < 6)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	k1921vg015_info = malloc(sizeof(struct k1921vg015_flash_bank));
+	k1921vg7t_info = malloc(sizeof(struct k1921vg7t_flash_bank));
 
-	bank->driver_priv = k1921vg015_info;
+	bank->driver_priv = k1921vg7t_info;
 
 	/* information will be updated by probing */
-	k1921vg015_info->probed = false;
-	k1921vg015_info->chip_name = "K1921VG015";
-	k1921vg015_info->flashwe = true;
-	k1921vg015_info->cfgwe = true;
+	k1921vg7t_info->probed = false;
+	k1921vg7t_info->chip_name = "k1921vg7t";
+	k1921vg7t_info->flashwe = true;
+	k1921vg7t_info->cfgwe = true;
 
 	return ERROR_OK;
 }
 
-static int k1921vg015_protect_check(struct flash_bank *bank)
+static int k1921vg7t_protect_check(struct flash_bank *bank)
 {
-	struct k1921vg015_flash_bank *k1921vg015_info = bank->driver_priv;
+	struct k1921vg7t_flash_bank *k1921vg7t_info = bank->driver_priv;
 
 	uint32_t protect_enable;
 
-	protect_enable = !k1921vg015_info->flashwe ? 1 : 0;
+	protect_enable = !k1921vg7t_info->flashwe ? 1 : 0;
 
 	for (unsigned int i = 0; i < bank->num_sectors; i++)
 		bank->sectors[i].is_protected = protect_enable;
@@ -758,12 +748,12 @@ static int k1921vg015_protect_check(struct flash_bank *bank)
 	return ERROR_OK;
 }
 
-static int k1921vg015_mass_erase(struct flash_bank *bank)
+static int k1921vg7t_mass_erase(struct flash_bank *bank)
 {
 	struct target *target = bank->target;
 	int retval;
 
-	retval = k1921vg015_flash_mass_erase(target, MAIN_REGION);
+	retval = k1921vg7t_flash_mass_erase(target, MAIN_REGION);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -774,7 +764,7 @@ static int k1921vg015_mass_erase(struct flash_bank *bank)
 	return retval;
 }
 
-static int k1921vg015_erase(struct flash_bank *bank, unsigned int first, unsigned int last)
+static int k1921vg7t_erase(struct flash_bank *bank, unsigned int first, unsigned int last)
 {
 	struct target *target = bank->target;
 	int retval = ERROR_FLASH_OPERATION_FAILED;
@@ -785,13 +775,13 @@ static int k1921vg015_erase(struct flash_bank *bank, unsigned int first, unsigne
 	}
 
 	if ((first == 0) && (last == (bank->num_sectors - 1))) {
-		retval = k1921vg015_mass_erase(bank);
+		retval = k1921vg7t_mass_erase(bank);
 		if (retval != ERROR_OK)
 			return retval;
 	} else {
 		/* erasing pages */
 		for (unsigned int i = first; i <= last; i++) {
-			retval = k1921vg015_flash_erase(target, i, MAIN_REGION);
+			retval = k1921vg7t_flash_erase(target, i, MAIN_REGION);
 			if (retval != ERROR_OK)
 				return retval;
 			bank->sectors[i].is_erased = 1;
@@ -801,10 +791,10 @@ static int k1921vg015_erase(struct flash_bank *bank, unsigned int first, unsigne
 	return retval;
 }
 
-static int k1921vg015_protect(struct flash_bank *bank, int set, unsigned int first, unsigned int last)
+static int k1921vg7t_protect(struct flash_bank *bank, int set, unsigned int first, unsigned int last)
 {
 	struct target *target = bank->target;
-	struct k1921vg015_flash_bank *k1921vg015_info = bank->driver_priv;
+	struct k1921vg7t_flash_bank *k1921vg7t_info = bank->driver_priv;
 
 	int retval;
 
@@ -816,17 +806,17 @@ static int k1921vg015_protect(struct flash_bank *bank, int set, unsigned int fir
 	LOG_INFO("Plese wait ...");
 
 	uint32_t param_mask = CFGWORD_FLASHWE;
-	retval = k1921vg015_flash_modify_cfgword(target, set, param_mask);
+	retval = k1921vg7t_flash_modify_cfgword(target, set, param_mask);
 	if (retval != ERROR_OK)
 		return retval;
-	k1921vg015_info->flashwe = false;
+	k1921vg7t_info->flashwe = false;
 	return retval;
 }
 
-static int k1921vg015_write_block(struct flash_bank *bank, const uint8_t *buffer,
+static int k1921vg7t_write_block(struct flash_bank *bank, const uint8_t *buffer,
 		uint32_t offset, uint32_t count)
 {
-	const uint32_t block_size = MFLASH_WORD_WIDTH * 4;
+	const uint32_t block_size = FLASH_WORD_WIDTH * 4;
 	const uint32_t stack_size = 128;
 	const uint32_t stack_align = 16;
 	target_addr_t stack_aligned_addr = 0;
@@ -839,20 +829,20 @@ static int k1921vg015_write_block(struct flash_bank *bank, const uint8_t *buffer
 	struct reg_param reg_params[5];
 	int retval = ERROR_OK;
 
-	static const uint8_t k1921vg015_flash_write_code[] = {
-#include "../../../contrib/loaders/flash/niiet/k1921vg015/k1921vg015.inc"
+	static const uint8_t k1921vg7t_flash_write_code[] = {
+#include "../../../contrib/loaders/flash/niiet/k1921vg7t/k1921vg7t.inc"
 	};
 
 	LOG_INFO("Start block write");
 	/* flash write code */
-	if (target_alloc_working_area(target, sizeof(k1921vg015_flash_write_code),
+	if (target_alloc_working_area(target, sizeof(k1921vg7t_flash_write_code),
 			&write_algorithm) != ERROR_OK) {
 		LOG_WARNING("no working area available, can't do block memory writes");
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
 	retval = target_write_buffer(target, write_algorithm->address,
-			sizeof(k1921vg015_flash_write_code),k1921vg015_flash_write_code);
+			sizeof(k1921vg7t_flash_write_code),k1921vg7t_flash_write_code);
 	if (retval != ERROR_OK){
 		target_free_working_area(target, write_algorithm);
 		return retval;
@@ -868,8 +858,8 @@ static int k1921vg015_write_block(struct flash_bank *bank, const uint8_t *buffer
 	stack_aligned_addr = (stack_area->address + stack_align) & ~(stack_align - 1); // align to 16
 
 	buffer_size = target_get_working_area_avail(target);
-	buffer_size = MIN(count * block_size, MAX(buffer_size, MFLASH_PAGE_SIZE)); 
-	buffer_size &= ~(MFLASH_WORD_WIDTH*4-1); /* Make sure it's aligned */
+	buffer_size = MIN(count * block_size, MAX(buffer_size, FLASH_PAGE_SIZE)); 
+	buffer_size &= ~(FLASH_WORD_WIDTH*4-1); /* Make sure it's aligned */
 	LOG_INFO("buffer_size %d, count %d", buffer_size, count);
 
 
@@ -891,7 +881,7 @@ static int k1921vg015_write_block(struct flash_bank *bank, const uint8_t *buffer
 	init_reg_param(&reg_params[3], "a3", 32, PARAM_IN_OUT); /* target address */
 	init_reg_param(&reg_params[4], "sp", 32, PARAM_OUT);
 	uint32_t flash_cmd;
-	flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_WR;
+	flash_cmd = FLASH_CMD_KEY | FLASH_CMD_WR;
 	uint32_t thisrun_count= 0;
 	for (unsigned int i = 0; i < count; i += thisrun_count) {
 		thisrun_count = MIN(buffer_size/block_size, count - i);
@@ -937,7 +927,7 @@ static int k1921vg015_write_block(struct flash_bank *bank, const uint8_t *buffer
 }
 
 
-static int k1921vg015_write(struct flash_bank *bank, const uint8_t *buffer,
+static int k1921vg7t_write(struct flash_bank *bank, const uint8_t *buffer,
 		uint32_t offset, uint32_t count)
 {
 	struct target *target = bank->target;
@@ -957,16 +947,16 @@ static int k1921vg015_write(struct flash_bank *bank, const uint8_t *buffer,
 	 * it's probably cheaper than to special case the last odd write using
 	 * discrete accesses. */
 
-	int rem = count % (MFLASH_WORD_WIDTH*4);
+	int rem = count % (FLASH_WORD_WIDTH*4);
 	if (rem) {
-		new_buffer = malloc(count + MFLASH_WORD_WIDTH*4 - rem);
+		new_buffer = malloc(count + FLASH_WORD_WIDTH*4 - rem);
 		if (new_buffer == NULL) {
 			LOG_ERROR("Odd number of words to write and no memory for padding buffer");
 			return ERROR_FAIL;
 		}
 		LOG_INFO("Odd number of words to write, padding with 0xFFFFFFFF");
 		buffer = memcpy(new_buffer, buffer, count);
-		while (rem < MFLASH_WORD_WIDTH*4) {
+		while (rem < FLASH_WORD_WIDTH*4) {
 			new_buffer[count++] = 0xff;
 			rem++;
 		}
@@ -975,44 +965,44 @@ static int k1921vg015_write(struct flash_bank *bank, const uint8_t *buffer,
 	int retval;
 
 	/* try using block write */
-	retval = k1921vg015_write_block(bank, buffer, offset, count/(MFLASH_WORD_WIDTH*4));
+	retval = k1921vg7t_write_block(bank, buffer, offset, count/(FLASH_WORD_WIDTH*4));
 	uint32_t flash_addr, flash_cmd, flash_data;
 	if (retval != ERROR_OK) {
 				/* if block write failed (no sufficient working area),
 				 * we use normal (slow) register accesses */
 		LOG_INFO("Block write failed, use slow mode"); /* it`s quite a long process */
 
-		flash_cmd = MFLASH_CMD_KEY | MFLASH_CMD_WR;
+		flash_cmd = FLASH_CMD_KEY | FLASH_CMD_WR;
 
 		/* write multiple bytes per try */
-		for (unsigned int i = 0; i < count; i += MFLASH_WORD_WIDTH*4) {
+		for (unsigned int i = 0; i < count; i += FLASH_WORD_WIDTH*4) {
 			/* current addr */
 			
 			flash_addr = offset + i;
 			LOG_INFO("%d byte of %d addr 0x%x", i, count,flash_addr);
-			retval = target_write_u32(target, MFLASH_ADDR, flash_addr);
+			retval = target_write_u32(target, FLASH_ADDR, flash_addr);
 			if (retval != ERROR_OK)
 				goto free_buffer;
 
 			/* Prepare data */
-			uint32_t value[MFLASH_WORD_WIDTH];
-			memcpy(&value, buffer + i, MFLASH_WORD_WIDTH*sizeof(uint32_t));
+			uint32_t value[FLASH_WORD_WIDTH];
+			memcpy(&value, buffer + i, FLASH_WORD_WIDTH*sizeof(uint32_t));
 
 			/* place in reg data */
-			for (int j = 0; j < MFLASH_WORD_WIDTH; j++) {
+			for (int j = 0; j < FLASH_WORD_WIDTH; j++) {
 				flash_data = value[j];
-				retval = target_write_u32(target, MFLASH_DATA0 + j*4, flash_data);
+				retval = target_write_u32(target, FLASH_DATA0 + j*4, flash_data);
 				if (retval != ERROR_OK)
 					goto free_buffer;
 			}
 
 			/* write start */
-			retval = target_write_u32(target, MFLASH_CMD, flash_cmd);
+			retval = target_write_u32(target, FLASH_CMD, flash_cmd);
 			if (retval != ERROR_OK)
 				goto free_buffer;
 
 			/* status check */
-			retval = k1921vg015_flash_waitdone(target);
+			retval = k1921vg7t_flash_waitdone(target);
 			if (retval != ERROR_OK)
 				goto free_buffer;
 		}
@@ -1025,9 +1015,9 @@ free_buffer:
 	return retval;
 }
 
-static int k1921vg015_probe(struct flash_bank *bank)
+static int k1921vg7t_probe(struct flash_bank *bank)
 {
-	struct k1921vg015_flash_bank *k1921vg015_info = bank->driver_priv;
+	struct k1921vg7t_flash_bank *k1921vg7t_info = bank->driver_priv;
 	struct target *target = bank->target;
 
 	if (bank->sectors) {
@@ -1037,56 +1027,56 @@ static int k1921vg015_probe(struct flash_bank *bank)
 	uint32_t retval;
 	uint32_t chipid;
 
-	retval = target_read_u32(target, PMUSYS_CHIPID, &chipid);
+	retval = target_read_u32(target, SIU_CHIPID, &chipid);
 	chipid = chipid & 0xFFFFFFF0; // reset number of revision bits
-	if ((retval != ERROR_OK) || (chipid != PMUSYS_CHIPID_K1921VG015)) {
-		LOG_INFO("CHIPID error %d, CHIPID=%x", retval,chipid);
-		return ERROR_FAIL;
+	if ((retval != ERROR_OK) || (chipid != SIU_CHIPID_K1921VG7T)) {
+		LOG_INFO("CHIPID error %d, CHIPID=%x, CHIPID_K1921VG7T=%x", retval,chipid,SIU_CHIPID_K1921VG7T);
+		//return ERROR_FAIL;  //TODO uncommeted
 	}
 
-	LOG_INFO("k1921vg015 detected");
-	bank->base = MFLASH_BANK_ADDR;
-	bank->size = MFLASH_PAGE_SIZE*MFLASH_PAGE_TOTAL;
-	bank->num_sectors = MFLASH_PAGE_TOTAL;
+	LOG_INFO("k1921vg7t detected");
+	bank->base = FLASH_BANK_ADDR;
+	bank->size = FLASH_PAGE_SIZE*FLASH_PAGE_TOTAL;
+	bank->num_sectors = FLASH_PAGE_TOTAL;
 
 	/* check if we in service mode */
 	uint32_t service_mode;
-	retval = target_read_u32(target, PMUSYS_SERVCTL, &service_mode);
+	retval = target_read_u32(target, SIU_SERVCTL, &service_mode);
 	if (retval != ERROR_OK)
 		return retval;
-	service_mode = service_mode & PMUSYS_SERVCTL_SERVEN ? 1 : 0;
+	service_mode = service_mode & SIU_SERVCTL_SERVEN ? 1 : 0;
 
 
 
 	if (!service_mode) {
 		uint32_t cfgword = 0xFFFFFFFF;
 		/* read CFGWORD */
-		retval = k1921vg015_flash_read_cfgword(target, &cfgword);
+		retval = k1921vg7t_flash_read_cfgword(target, &cfgword);
 		if (retval != ERROR_OK)
 			return retval;
 
 
-		k1921vg015_info->flashwe = (cfgword & CFGWORD_FLASHWE) == CFGWORD_FLASHWE;
-		k1921vg015_info->cfgwe = (cfgword & CFGWORD_CFGWE) == CFGWORD_CFGWE;
+		k1921vg7t_info->flashwe = (cfgword & CFGWORD_FLASHWE) == CFGWORD_FLASHWE;
+		k1921vg7t_info->cfgwe = (cfgword & CFGWORD_CFGWE) == CFGWORD_CFGWE;
 
 
 
-		snprintf(k1921vg015_info->chip_brief,
-				sizeof(k1921vg015_info->chip_brief),
+		snprintf(k1921vg7t_info->chip_brief,
+				sizeof(k1921vg7t_info->chip_brief),
 				"\n"
 				"[MEMORY CONFIGURATION]\n"
-				"Memory mapped to 0x%llx (will be used for writing and debugging):\n"
+				"Memory mapped to 0x%"PRIu64" (will be used for writing and debugging):\n"
 				"\n"
 				"[CFGWORD]\n"
-				"MFLASH main region write protection :\n"
+				"FLASH main region write protection :\n"
 				"    %s\n"
-				"MFLASH NVR region write protection :\n"
+				"FLASH NVR region write protection :\n"
 				"    %s\n",
 				bank->base,
-				k1921vg015_info->flashwe ? "disable" : "enable",
-				k1921vg015_info->cfgwe ? "disable" : "enable");
+				k1921vg7t_info->flashwe ? "disable" : "enable",
+				k1921vg7t_info->cfgwe ? "disable" : "enable");
 	} else {
-		sprintf(k1921vg015_info->chip_brief,
+		sprintf(k1921vg7t_info->chip_brief,
 				"\n"
 				"SERVEN was HIGH during startup. Device entered service mode.\n"
 				"All flash memories were locked and can not be readen.\n"
@@ -1108,41 +1098,41 @@ static int k1921vg015_probe(struct flash_bank *bank)
 		bank->sectors[i].is_protected = -1;
 	}
 
-	k1921vg015_info->probed = true;
+	k1921vg7t_info->probed = true;
 
 	return ERROR_OK;
 }
 
-static int k1921vg015_auto_probe(struct flash_bank *bank)
+static int k1921vg7t_auto_probe(struct flash_bank *bank)
 {
-	struct k1921vg015_flash_bank *k1921vg015_info = bank->driver_priv;
-	if (k1921vg015_info->probed)
+	struct k1921vg7t_flash_bank *k1921vg7t_info = bank->driver_priv;
+	if (k1921vg7t_info->probed)
 		return ERROR_OK;
-	return k1921vg015_probe(bank);
+	return k1921vg7t_probe(bank);
 }
 
-static int get_k1921vg015_info(struct flash_bank *bank, struct command_invocation *cmd)
+static int get_k1921vg7t_info(struct flash_bank *bank, struct command_invocation *cmd)
 {
-	struct k1921vg015_flash_bank *k1921vg015_info = bank->driver_priv;
-	command_print_sameline(cmd, "\nNIIET %s\n%s", k1921vg015_info->chip_name, k1921vg015_info->chip_brief);
+	struct k1921vg7t_flash_bank *k1921vg7t_info = bank->driver_priv;
+	command_print_sameline(cmd, "\nNIIET %s\n%s", k1921vg7t_info->chip_name, k1921vg7t_info->chip_brief);
 
 	return ERROR_OK;
 }
 
 
-const struct flash_driver k1921vg015_flash = {
-	.name = "k1921vg015",
-	.usage = "flash bank <name> k1921vg015 <base> <size> 0 0 <target#>",
-	.commands = k1921vg015_command_handlers,
-	.flash_bank_command = k1921vg015_flash_bank_command,
-	.erase = k1921vg015_erase,
-	.protect = k1921vg015_protect,
-	.write = k1921vg015_write,
+const struct flash_driver k1921vg7t_flash = {
+	.name = "k1921vg7t",
+	.usage = "flash bank <name> k1921vg7t <base> <size> 0 0 <target#>",
+	.commands = k1921vg7t_command_handlers,
+	.flash_bank_command = k1921vg7t_flash_bank_command,
+	.erase = k1921vg7t_erase,
+	.protect = k1921vg7t_protect,
+	.write = k1921vg7t_write,
 	.read = default_flash_read,
-	.probe = k1921vg015_probe,
-	.auto_probe = k1921vg015_auto_probe,
+	.probe = k1921vg7t_probe,
+	.auto_probe = k1921vg7t_auto_probe,
 	.erase_check = default_flash_blank_check,
-	.protect_check = k1921vg015_protect_check,
-	.info = get_k1921vg015_info,
+	.protect_check = k1921vg7t_protect_check,
+	.info = get_k1921vg7t_info,
 	.free_driver_priv = default_flash_free_driver_priv,
 };

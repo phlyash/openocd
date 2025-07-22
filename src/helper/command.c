@@ -610,13 +610,14 @@ int command_run_line(struct command_context *context, char *line)
 	} else {
 		Jim_MakeErrorMessage(interp);
 		/* error is broadcast */
-		LOG_USER("%s", Jim_GetString(Jim_GetResult(interp), NULL));
+		LOG_USER("ERROR: %s", Jim_GetString(Jim_GetResult(interp), NULL));
 
 		if (retval == ERROR_OK) {
 			/* It wasn't a low level OpenOCD command that failed */
-			return ERROR_FAIL;
+			//return ERROR_FAIL;
 		}
-		return retval;
+		//return retval;
+		retval = ERROR_OK;
 	}
 
 	return retval;

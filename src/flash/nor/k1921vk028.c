@@ -318,7 +318,7 @@ static int k1921vk028_flash_sector_dump(struct target *target, uint32_t *dump, i
         if (retval != ERROR_OK)
             return retval;
         for (int j = 0; j < data_total; j++) {
-            dump[(i%MFLASH_PAGE_SIZE)/4+j] = data[j];
+            dump[(i%page_size)/4+j] = data[j];
         }
     }
 
@@ -344,7 +344,7 @@ static int k1921vk028_flash_sector_load(struct target *target, uint32_t *dump, i
 
     for (int i = first; i < last; i+=4*data_total) {
         for (int j = 0; j < data_total; j++) {
-            data[j] = dump[(i%MFLASH_PAGE_SIZE)/4+j];
+            data[j] = dump[(i%page_size)/4+j];
         }
         retval = k1921vk028_flash_write(target, i, data, type, region);
         if (retval != ERROR_OK)

@@ -37,6 +37,10 @@ NOR_DRIVERS = \
 	%D%/k1921vk028.c \
 	%D%/k1921vk035.c \
 	%D%/k1921vg015.c \
+	%D%/k1921vg1t.c \	
+	%D%/k1921vg3t.c \
+	%D%/k1921vg5t.c \
+	%D%/k1921vg7t.c \
 	%D%/kinetis.c \
 	%D%/kinetis_ke.c \
 	%D%/lpc2000.c \
@@ -57,7 +61,6 @@ NOR_DRIVERS = \
 	%D%/psoc4.c \
 	%D%/psoc5lp.c \
 	%D%/psoc6.c \
-	%D%/qn908x.c \
 	%D%/renesas_rpchf.c \
 	%D%/rp2040.c \
 	%D%/rsl10.c \

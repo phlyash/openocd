@@ -121,7 +121,9 @@ int parse_config_file(struct command_context *cmd_ctx)
 
 	cfg = config_file_names;
 
+
 	while (*cfg) {
+		LOG_DEBUG("%s", *cfg);
 		retval = command_run_line(cmd_ctx, *cfg);
 		if (retval != ERROR_OK)
 			return retval;
