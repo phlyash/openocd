@@ -19,7 +19,7 @@
  *==============================================================================
  */
 /*-- SIU ---------------------------------------------------------------------*/
-#define SIU_CHIPID_K1921VG3T    0x04e4c201
+#define SIU_CHIPID_K1921VG3T    0x04e4c200
 #define SIU_BASE                0x50003000
 #define SIU_SERVCTL             (SIU_BASE + 0x04)
 #define SIU_CHIPID              (SIU_BASE + 0x00)
@@ -1041,8 +1041,8 @@ static int k1921vg3t_probe(struct flash_bank *bank)
 	retval = target_read_u32(target, SIU_CHIPID, &chipid);
 	chipid = chipid & 0xFFFFFFF0; // reset number of revision bits
 	if ((retval != ERROR_OK) || (chipid != SIU_CHIPID_K1921VG3T)) {
-		LOG_INFO("CHIPID error %d, CHIPID=%x, CHIPID_K1921VG3T=%x", retval,chipid,SIU_CHIPID_K1921VG3T);
-//		return ERROR_FAIL;  //TODO: uncommeted
+		LOG_INFO("CHIPID error %d, CHIPID=%x", retval,chipid);
+		return ERROR_FAIL;
 	}
 
 	LOG_INFO("k1921vg3t detected");
