@@ -1078,11 +1078,11 @@ static int k1921vg015_probe(struct flash_bank *bank)
 				"Memory mapped to 0x%llx (will be used for writing and debugging):\n"
 				"\n"
 				"[CFGWORD]\n"
-				"MFLASH main region write protection :\n"
+				"FLASH main region write protection :\n"
 				"    %s\n"
-				"MFLASH NVR region write protection :\n"
+				"FLASH NVR region write protection :\n"
 				"    %s\n",
-				bank->base,
+				(long long unsigned int)bank->base,
 				k1921vg015_info->flashwe ? "disable" : "enable",
 				k1921vg015_info->cfgwe ? "disable" : "enable");
 	} else {
