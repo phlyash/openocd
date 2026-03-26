@@ -19,7 +19,7 @@
  *==============================================================================
  */
 /*-- SIU ---------------------------------------------------------------------*/
-#define SIU_CHIPID_K1921VG5T    0x04e4c400
+#define SIU_CHIPID_K1921VG5T    0x04e4c300
 #define SIU_BASE                0x50003000
 #define SIU_SERVCTL             (SIU_BASE + 0x04)
 #define SIU_CHIPID              (SIU_BASE + 0x00)
