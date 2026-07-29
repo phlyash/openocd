@@ -39,3 +39,64 @@ jobs:
         with:
           name: openocd-macos-arm64
           path: stage/usr/local
+
+  linux:
+    name: Linux (${{ matrix.arch }}, glibc 2.17)
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            image: quay.io/pypa/manylinux2014_x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux2014_aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: bash .github/scripts/build-linux-deps.sh
+
+      - name: Bootstrap
+        run: ./bootstrap nosubmodule
+
+      - name: Configure
+        run: |
+          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+          export LDFLAGS='-Wl,-rpath,$ORIGIN/../lib'
+          ./configure --prefix=/usr/local
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Smoke test
+        run: |
+          export LD_LIBRARY_PATH=/usr/local/lib
+          ./src/openocd --version
+
+      - name: Stage install
+        run: make install-strip DESTDIR="$(pwd)/stage"
+
+      - name: Bundle custom-built runtime libraries
+        run: |
+          mkdir -p stage/usr/local/lib
+          cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
+          cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
+          cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
+
+      - name: Verify staged binary runs without external library help
+        run: |
+          cd stage/usr/local/bin
+          env -u LD_LIBRARY_PATH ./openocd --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openocd-linux-${{ matrix.arch }}
+          path: stage/usr/local
