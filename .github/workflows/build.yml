@@ -161,3 +161,54 @@ jobs:
         with:
           name: openocd-windows-x86_64
           path: stage/mingw64
+
+  windows-arm64:
+    name: Windows (arm64, cross-compiled, libusb only)
+    runs-on: ubuntu-latest
+    env:
+      TRIPLE: aarch64-w64-mingw32
+      SYSROOT: /tmp/arm64-sysroot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install cross-compile prerequisites
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool pkg-config texinfo
+
+      - name: Install llvm-mingw
+        run: |
+          BIN_DIR=$(bash .github/scripts/setup-llvm-mingw.sh /opt/llvm-mingw)
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Cross-build libusb-1.0
+        run: bash .github/scripts/build-libusb-mingw-arm64.sh "$SYSROOT"
+
+      - name: Bootstrap
+        run: ./bootstrap nosubmodule
+
+      - name: Configure
+        run: |
+          export LIBUSB1_CFLAGS="-I$SYSROOT/usr/include/libusb-1.0"
+          export LIBUSB1_LIBS="-L$SYSROOT/usr/lib -lusb-1.0"
+          export CC="$TRIPLE-clang"
+          ./configure --host="$TRIPLE" --prefix=/usr
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Verify binary architecture
+        run: file src/openocd.exe | tee /dev/stderr | grep -q 'Aarch64'
+
+      - name: Stage install
+        run: make install-strip DESTDIR="$(pwd)/stage"
+
+      - name: Bundle libusb DLL
+        run: cp "$SYSROOT/usr/bin/libusb-1.0.dll" "$(pwd)/stage/usr/bin/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openocd-windows-arm64
+          path: stage/usr
