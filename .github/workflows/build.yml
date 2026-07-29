@@ -100,3 +100,64 @@ jobs:
         with:
           name: openocd-linux-${{ matrix.arch }}
           path: stage/usr/local
+
+  windows-x86_64:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-libusb-compat-git
+            mingw-w64-x86_64-libftdi
+            mingw-w64-x86_64-hidapi
+            mingw-w64-x86_64-libjaylink-git
+            mingw-w64-x86_64-pkg-config
+            autoconf
+            autoconf-archive
+            automake
+            automake-wrapper
+            binutils
+            gettext
+            git
+            libtool
+            m4
+            make
+            tcl
+            texinfo
+
+      - name: Bootstrap
+        run: ./bootstrap nosubmodule
+
+      - name: Configure
+        run: ./configure --prefix=/mingw64
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Smoke test
+        run: ./src/openocd.exe --version
+
+      - name: Stage install
+        run: make install-strip DESTDIR="$(pwd)/stage"
+
+      - name: Bundle runtime DLLs
+        run: bash .github/scripts/bundle-mingw-dlls.sh "$(pwd)/stage/mingw64/bin"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openocd-windows-x86_64
+          path: stage/mingw64
