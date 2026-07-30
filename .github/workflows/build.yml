@@ -43,7 +43,6 @@ jobs:
   linux:
     name: Linux (${{ matrix.arch }}, glibc 2.17)
     runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
@@ -60,40 +59,56 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Start build container
+        run: |
+          docker run -d --name build \
+            -v "${{ github.workspace }}":/src -w /src \
+            ${{ matrix.image }} \
+            sleep infinity
+          docker exec build git config --global --add safe.directory /src
+
       - name: Install build dependencies
-        run: bash .github/scripts/build-linux-deps.sh
+        run: docker exec build bash .github/scripts/build-linux-deps.sh
 
       - name: Bootstrap
-        run: ./bootstrap nosubmodule
+        run: docker exec build ./bootstrap nosubmodule
 
       - name: Configure
         run: |
-          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-          export LDFLAGS='-Wl,-rpath,$ORIGIN/../lib'
-          ./configure --prefix=/usr/local
+          docker exec \
+            -e PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+            -e LDFLAGS='-Wl,-rpath,$ORIGIN/../lib' \
+            build ./configure --prefix=/usr/local
 
       - name: Build
-        run: make -j"$(nproc)"
+        run: docker exec build bash -c 'make -j"$(nproc)"'
 
       - name: Smoke test
-        run: |
-          export LD_LIBRARY_PATH=/usr/local/lib
-          ./src/openocd --version
+        run: docker exec -e LD_LIBRARY_PATH=/usr/local/lib build ./src/openocd --version
 
       - name: Stage install
-        run: make install-strip DESTDIR="$(pwd)/stage"
+        run: docker exec build bash -c 'make install-strip DESTDIR=/src/stage'
 
       - name: Bundle custom-built runtime libraries
         run: |
-          mkdir -p stage/usr/local/lib
-          cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
-          cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
-          cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
+          docker exec build bash -c '
+            mkdir -p stage/usr/local/lib
+            cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
+            cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
+            cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
+          '
 
       - name: Verify staged binary runs without external library help
         run: |
-          cd stage/usr/local/bin
-          env -u LD_LIBRARY_PATH ./openocd --version
+          docker exec build bash -c '
+            cd stage/usr/local/bin
+            env -u LD_LIBRARY_PATH ./openocd --version
+            readelf -d ./openocd | grep -E "R(UN)?PATH.*[\$]ORIGIN"
+          '
+
+      - name: Stop build container
+        if: always()
+        run: docker rm -f build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

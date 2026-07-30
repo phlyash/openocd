@@ -9,10 +9,9 @@ if [ -f /opt/rh/devtoolset-10/enable ]; then
   source /opt/rh/devtoolset-10/enable
 fi
 
-yum install -y epel-release
 yum install -y \
-  autoconf automake libtool pkgconfig texinfo cmake3 \
-  libudev-devel git wget curl tar bzip2 xz \
+  autoconf automake libtool pkgconfig texinfo \
+  systemd-devel git wget curl tar bzip2 xz \
   gcc gcc-c++ make
 
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
@@ -40,7 +39,7 @@ tar xf libftdi1.tar.bz2
 mkdir -p libftdi1-1.5/build
 (
   cd libftdi1-1.5/build
-  cmake3 -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DFTDI_EEPROM=OFF ..
+  cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DFTDI_EEPROM=OFF ..
   make -j"$(nproc)"
   make install
 )
@@ -52,7 +51,7 @@ tar xf hidapi.tar.gz
 mkdir -p hidapi-hidapi-0.14.0/build
 (
   cd hidapi-hidapi-0.14.0/build
-  cmake3 -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release ..
+  cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release ..
   make -j"$(nproc)"
   make install
 )
