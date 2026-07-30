@@ -61,7 +61,8 @@ jobs:
           done
           codesign --force --sign - "$BIN"
           for f in stage/usr/local/lib/*.dylib; do
-            [ -f "$f" ] && codesign --force --sign - "$f"
+            [ -f "$f" ] || continue
+            codesign --force --sign - "$f"
           done
 
       - name: Verify staged binary runs without external library help
