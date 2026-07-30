@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install dependencies
-        run: brew install libtool automake autoconf pkg-config texinfo libusb libftdi hidapi
+        run: brew install libtool automake autoconf pkg-config texinfo libusb libftdi hidapi libjaylink
 
       - name: Bootstrap
         run: ./bootstrap nosubmodule
