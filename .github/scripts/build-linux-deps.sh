@@ -5,8 +5,12 @@
 set -euo pipefail
 
 if [ -f /opt/rh/devtoolset-10/enable ]; then
+  # devtoolset-10's enable script references MANPATH without a default,
+  # which set -u treats as fatal.
+  set +u
   # shellcheck disable=SC1091
   source /opt/rh/devtoolset-10/enable
+  set -u
 fi
 
 yum install -y \
