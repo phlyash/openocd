@@ -212,6 +212,7 @@ jobs:
 
       - name: Configure
         run: |
+          export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig"
           export LIBUSB1_CFLAGS="-I$SYSROOT/usr/include/libusb-1.0"
           export LIBUSB1_LIBS="-L$SYSROOT/usr/lib -lusb-1.0"
           export CC="$TRIPLE-clang"
@@ -226,8 +227,20 @@ jobs:
       - name: Stage install
         run: make install-strip DESTDIR="$(pwd)/stage"
 
-      - name: Bundle libusb DLL
-        run: cp "$SYSROOT/usr/bin/libusb-1.0.dll" "$(pwd)/stage/usr/bin/"
+      - name: Bundle runtime DLLs
+        run: |
+          # llvm-mingw ships llvm-objdump; whether it also installs a
+          # $TRIPLE-prefixed wrapper for it varies by release.
+          OBJDUMP=$(command -v "$TRIPLE-objdump" || command -v llvm-objdump)
+          SEARCH_DIRS="/tmp/llvm-mingw/$TRIPLE/bin $SYSROOT/usr/bin"
+          for dll in $("$OBJDUMP" -p "$(pwd)/stage/usr/bin/openocd.exe" | awk '/DLL Name:/{print $3}'); do
+            for dir in $SEARCH_DIRS; do
+              if [ -f "$dir/$dll" ]; then
+                cp -u "$dir/$dll" "$(pwd)/stage/usr/bin/"
+                break
+              fi
+            done
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
