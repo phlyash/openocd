@@ -15,8 +15,21 @@ if [ "${#exes[@]}" -eq 0 ]; then
   exit 1
 fi
 
-for exe in "${exes[@]}"; do
-  ldd "$exe" | awk '{print $3}' | grep -iE '^/(mingw64|clang64|ucrt64)/bin/' || true
-done | sort -u | while read -r dll; do
+dlls=$(
+  for exe in "${exes[@]}"; do
+    # `|| true` tolerates one exe having no mingw-provided deps while
+    # another does; the aggregate check below catches a total failure.
+    ldd "$exe" | awk '{print $3}' | grep -iE '^/(mingw64|clang64|ucrt64)/bin/' || true
+  done | sort -u
+)
+
+if [ -z "$dlls" ]; then
+  echo "No mingw-provided DLL dependencies found for any .exe in $BIN_DIR." >&2
+  echo "A real openocd.exe always links at least one, so this means the" >&2
+  echo "dependency scan itself failed (ldd missing, wrong MSYSTEM, ...)." >&2
+  exit 1
+fi
+
+while read -r dll; do
   cp -u "$dll" "$BIN_DIR/"
-done
+done <<< "$dlls"
