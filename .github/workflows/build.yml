@@ -180,7 +180,6 @@ jobs:
             mingw-w64-x86_64-libusb-compat-git
             mingw-w64-x86_64-libftdi
             mingw-w64-x86_64-hidapi
-            mingw-w64-x86_64-libjaylink-git
             mingw-w64-x86_64-pkg-config
             autoconf
             autoconf-archive
