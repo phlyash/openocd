@@ -622,7 +622,7 @@ Add this as a new top-level entry under `jobs:` in `.github/workflows/build.yml`
 
       - name: Install llvm-mingw
         run: |
-          BIN_DIR=$(bash .github/scripts/setup-llvm-mingw.sh /opt/llvm-mingw)
+          BIN_DIR=$(bash .github/scripts/setup-llvm-mingw.sh /tmp/llvm-mingw)
           echo "$BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Cross-build libusb-1.0
