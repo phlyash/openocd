@@ -43,7 +43,11 @@ tar xf libftdi1.tar.bz2
 mkdir -p libftdi1-1.5/build
 (
   cd libftdi1-1.5/build
-  cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DFTDI_EEPROM=OFF ..
+  # libftdi1 does not use GNUInstallDirs; it has its own LIB_SUFFIX
+  # variable that defaults to "64" on any 64-bit RHEL/CentOS-family
+  # host (manylinux2014 qualifies on both x86_64 and arm64), so
+  # CMAKE_INSTALL_LIBDIR above has no effect on it.
+  cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DLIB_SUFFIX= -DCMAKE_BUILD_TYPE=Release -DFTDI_EEPROM=OFF ..
   make -j"$(nproc)"
   make install
 )
