@@ -128,6 +128,7 @@ jobs:
       - name: Bundle custom-built runtime libraries
         run: |
           docker exec build bash -c '
+            set -e
             mkdir -p stage/usr/local/lib
             cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
@@ -137,6 +138,7 @@ jobs:
       - name: Verify staged binary runs without external library help
         run: |
           docker exec build bash -c '
+            set -e
             cd stage/usr/local/bin
             env -u LD_LIBRARY_PATH ./openocd --version
             readelf -d ./openocd | grep -E "R(UN)?PATH.*[\$]ORIGIN"
