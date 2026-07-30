@@ -37,6 +37,38 @@ jobs:
       - name: Stage install
         run: make install-strip DESTDIR="$(pwd)/stage"
 
+      - name: Bundle Homebrew runtime libraries
+        run: |
+          mkdir -p stage/usr/local/lib
+          BIN=stage/usr/local/bin/openocd
+          # Copy every Homebrew-provided dylib openocd (transitively) depends on
+          queue="$BIN"
+          while [ -n "$queue" ]; do
+            next=""
+            for f in $queue; do
+              for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/'); do
+                base=$(basename "$dep")
+                dest="stage/usr/local/lib/$base"
+                if [ ! -f "$dest" ]; then
+                  cp "$dep" "$dest"
+                  chmod u+w "$dest"
+                  next="$next $dest"
+                fi
+                install_name_tool -change "$dep" "@loader_path/../lib/$base" "$f"
+              done
+            done
+            queue="$next"
+          done
+          codesign --force --sign - "$BIN"
+          for f in stage/usr/local/lib/*.dylib; do
+            [ -f "$f" ] && codesign --force --sign - "$f"
+          done
+
+      - name: Verify staged binary runs without external library help
+        run: |
+          cd stage/usr/local/bin
+          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH ./openocd --version
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
