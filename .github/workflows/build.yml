@@ -115,7 +115,6 @@ jobs:
         run: |
           docker exec \
             -e PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-            -e LDFLAGS=-Wl,-rpath,/usr/local/lib \
             build ./configure --prefix=/usr/local
 
       - name: Build
@@ -136,6 +135,9 @@ jobs:
             cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libjaylink.so* stage/usr/local/lib/
+            mv stage/usr/local/bin/openocd stage/usr/local/bin/openocd.bin
+            cp .github/scripts/linux-openocd-wrapper.sh stage/usr/local/bin/openocd
+            chmod +x stage/usr/local/bin/openocd
           '
 
       - name: Verify staged binary runs without external library help
@@ -144,7 +146,6 @@ jobs:
             set -e
             cd stage/usr/local/bin
             env -u LD_LIBRARY_PATH ./openocd --version
-            readelf -d ./openocd | grep -E "RPATH.*/usr/local/lib"
           '
 
       - name: Stop build container
