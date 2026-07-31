@@ -134,6 +134,7 @@ jobs:
             cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
+            cp -a /usr/local/lib/libjaylink.so* stage/usr/local/lib/
             command -v patchelf >/dev/null || python3 -m pip install --quiet patchelf
             patchelf --set-rpath "\$ORIGIN/../lib" stage/usr/local/bin/openocd
           '
@@ -183,6 +184,7 @@ jobs:
             mingw-w64-x86_64-libusb-compat-git
             mingw-w64-x86_64-libftdi
             mingw-w64-x86_64-hidapi
+            mingw-w64-x86_64-libjaylink
             mingw-w64-x86_64-pkg-config
             autoconf
             autoconf-archive
@@ -222,7 +224,7 @@ jobs:
           path: stage/mingw64
 
   windows-arm64:
-    name: Windows (arm64, cross-compiled, libusb only)
+    name: Windows (arm64, cross-compiled)
     runs-on: ubuntu-latest
     env:
       TRIPLE: aarch64-w64-mingw32
@@ -234,7 +236,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install cross-compile prerequisites
-        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool pkg-config texinfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config texinfo cmake meson ninja-build
 
       - name: Install llvm-mingw
         run: |
@@ -244,12 +248,29 @@ jobs:
       - name: Cross-build libusb-1.0
         run: bash .github/scripts/build-libusb-mingw-arm64.sh "$SYSROOT"
 
+      - name: Cross-build libftdi1
+        run: bash .github/scripts/build-libftdi-mingw-arm64.sh "$SYSROOT"
+
+      - name: Cross-build hidapi
+        run: bash .github/scripts/build-hidapi-mingw-arm64.sh "$SYSROOT"
+
+      - name: Cross-build libjaylink
+        run: bash .github/scripts/build-libjaylink-mingw-arm64.sh "$SYSROOT"
+
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
       - name: Configure
         run: |
           export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig"
+          # Makes pkg-config prepend $SYSROOT to the paths baked into the
+          # cross-built .pc files (all generated with --prefix=/usr), so
+          # libftdi1/hidapi/libjaylink auto-detect via PKG_CHECK_MODULES
+          # the same way they do on the native Linux/macOS/Windows-x86_64
+          # jobs. libusb keeps using the hand-set LIBUSB1_CFLAGS/LIBS below
+          # since that's already proven working; this only newly matters
+          # for the three libraries just cross-built above.
+          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
           export LIBUSB1_CFLAGS="-I$SYSROOT/usr/include/libusb-1.0"
           export LIBUSB1_LIBS="-L$SYSROOT/usr/lib -lusb-1.0"
           export CC="$TRIPLE-clang"
