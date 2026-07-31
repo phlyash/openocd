@@ -115,7 +115,6 @@ jobs:
         run: |
           docker exec \
             -e PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-            -e LDFLAGS='-Wl,-rpath,$ORIGIN/../lib' \
             build ./configure --prefix=/usr/local
 
       - name: Build
@@ -135,6 +134,8 @@ jobs:
             cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
             cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
+            command -v patchelf >/dev/null || python3 -m pip install --quiet patchelf
+            patchelf --set-rpath "\$ORIGIN/../lib" stage/usr/local/bin/openocd
           '
 
       - name: Verify staged binary runs without external library help
@@ -252,6 +253,12 @@ jobs:
           export LIBUSB1_CFLAGS="-I$SYSROOT/usr/include/libusb-1.0"
           export LIBUSB1_LIBS="-L$SYSROOT/usr/lib -lusb-1.0"
           export CC="$TRIPLE-clang"
+          # llvm-mingw's own SDK headers expand FD_SET as a SOCKET (unsigned
+          # 64-bit) vs int comparison; openocd's socket fields are plain int
+          # throughout src/server/*, a pre-existing mismatch never exercised
+          # on any other toolchain here. Downgrade just this diagnostic
+          # rather than touching -Werror globally or the socket type.
+          export CFLAGS="-g -O2 -Wno-error=sign-compare"
           ./configure --host="$TRIPLE" --prefix=/usr
 
       - name: Build
