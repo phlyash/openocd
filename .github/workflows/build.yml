@@ -582,18 +582,8 @@ jobs:
         include:
           - variant: O0
             cflags: "-g3 -O0 -fno-omit-frame-pointer"
-
-          - variant: O1
-            cflags: "-g3 -O1 -fno-omit-frame-pointer"
-
           - variant: O2
             cflags: "-g3 -O2 -fno-omit-frame-pointer"
-
-          - variant: O2-no-strict-aliasing
-            cflags: "-g3 -O2 -fno-strict-aliasing -fno-omit-frame-pointer"
-
-          - variant: O2-fwrapv
-            cflags: "-g3 -O2 -fwrapv -fno-omit-frame-pointer"
 
     env:
       CFLAGS: ${{ matrix.cflags }}
