@@ -202,15 +202,15 @@ jobs:
         run: |
           set -e
 
-          rm -rf /tmp/jimtcl-0.83
+          rm -rf /tmp/jimtcl-0.82
 
           git clone \
             --depth 1 \
-            --branch 0.83 \
+            --branch 0.82 \
             https://github.com/msteveb/jimtcl.git \
-            /tmp/jimtcl-0.83
+            /tmp/jimtcl-0.82
 
-          cd /tmp/jimtcl-0.83
+          cd /tmp/jimtcl-0.82
 
           ./configure \
             --prefix=/ucrt64 \
@@ -219,13 +219,11 @@ jobs:
             --disable-ssl
 
           make -j"$(nproc)"
-
-          # Required by JimTcl static Windows install.
           touch build-jim-ext
-
           make install
 
           pkg-config --modversion jimtcl
+          pkg-config --cflags jimtcl
           pkg-config --libs jimtcl
 
       - name: Bootstrap
@@ -412,15 +410,15 @@ jobs:
         run: |
           set -e
 
-          rm -rf /tmp/jimtcl-0.83
+          rm -rf /tmp/jimtcl-0.82
 
           git clone \
             --depth 1 \
-            --branch 0.83 \
+            --branch 0.82 \
             https://github.com/msteveb/jimtcl.git \
-            /tmp/jimtcl-0.83
+            /tmp/jimtcl-0.82
 
-          cd /tmp/jimtcl-0.83
+          cd /tmp/jimtcl-0.82
 
           ./configure \
             --prefix=/clangarm64 \
@@ -429,12 +427,12 @@ jobs:
             --disable-ssl
 
           make -j"$(nproc)"
-
           touch build-jim-ext
-
           make install
 
           pkg-config --modversion jimtcl
+          pkg-config --cflags jimtcl
+          pkg-config --libs jimtcl
 
       - name: Bootstrap
         run: ./bootstrap nosubmodule
