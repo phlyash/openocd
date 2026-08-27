@@ -571,3 +571,552 @@ jobs:
         with:
           name: openocd-windows-arm64
           path: stage/clangarm64
+
+  windows-x86_64-reference:
+    name: Windows (x86_64, native MSYS2 reference)
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Normalize line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # Important:
+      # release: false -> use MSYS2 already installed on windows-latest
+      # cache: false   -> do not reuse setup-msys2 package cache
+      # update: false  -> do not upgrade the whole MSYS2 installation
+      #
+      # This is intentionally MINGW64 because we want a reference build
+      # close to a normal/manual MSYS2 build first.
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          release: false
+          update: false
+          cache: false
+          path-type: minimal
+          suppress-deprecation-warnings: msystem-mingw64
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-libftdi
+            mingw-w64-x86_64-hidapi
+            mingw-w64-x86_64-libjaylink
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-gdb
+            autoconf
+            autoconf-archive
+            automake
+            binutils
+            gettext
+            git
+            libtool
+            m4
+            make
+            texinfo
+
+      - name: Show MSYS2 location
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          Write-Host "MSYS2_LOCATION=$env:MSYS2_LOCATION"
+          Write-Host "ImageOS=$env:ImageOS"
+          Write-Host "ImageVersion=$env:ImageVersion"
+
+      - name: Environment fingerprint
+        run: |
+          set -e
+
+          {
+            echo "=============================="
+            echo "GIT"
+            echo "=============================="
+            git rev-parse HEAD
+            git status --short
+            git submodule status --recursive
+
+            echo
+            echo "=============================="
+            echo "MSYS2"
+            echo "=============================="
+            echo "MSYSTEM=$MSYSTEM"
+            echo "MINGW_PREFIX=$MINGW_PREFIX"
+            echo "MINGW_CHOST=$MINGW_CHOST"
+            echo "MSYSTEM_CARCH=$MSYSTEM_CARCH"
+            uname -a
+
+            echo
+            echo "=============================="
+            echo "PATH"
+            echo "=============================="
+            printf '%s\n' "$PATH"
+
+            echo
+            echo "=============================="
+            echo "COMPILER"
+            echo "=============================="
+            which gcc
+            gcc --version
+            gcc -v
+
+            echo
+            echo "=============================="
+            echo "LINKER"
+            echo "=============================="
+            which ld
+            ld --version
+
+            echo
+            echo "=============================="
+            echo "BINUTILS"
+            echo "=============================="
+            objdump --version
+            nm --version
+
+            echo
+            echo "=============================="
+            echo "BUILD TOOLS"
+            echo "=============================="
+            make --version
+            autoconf --version | head -1
+            automake --version | head -1
+            libtool --version | head -1
+            pkg-config --version
+
+            echo
+            echo "=============================="
+            echo "DEPENDENCY VERSIONS"
+            echo "=============================="
+            pkg-config --modversion libusb-1.0 || true
+            pkg-config --modversion libftdi1 || true
+            pkg-config --modversion hidapi || true
+            pkg-config --modversion libjaylink || true
+
+            echo
+            echo "=============================="
+            echo "INSTALLED PACKAGES"
+            echo "=============================="
+            pacman -Q
+
+            echo
+            echo "=============================="
+            echo "ENVIRONMENT"
+            echo "=============================="
+            env | sort
+
+          } | tee build-fingerprint.txt
+
+      - name: Bootstrap
+        run: |
+          set -e
+          ./bootstrap
+
+      - name: Configure
+        run: |
+          set -o pipefail
+
+          ./configure \
+            --prefix=/mingw64 \
+            --enable-internal-jimtcl \
+            2>&1 | tee configure-output.txt
+
+      - name: Save configure summary
+        if: always()
+        run: |
+          {
+            echo "=============================="
+            echo "JimTcl"
+            echo "=============================="
+
+            grep -i -E 'jim|jimtcl' config.log || true
+
+            echo
+            echo "=============================="
+            echo "libusb"
+            echo "=============================="
+
+            grep -i 'libusb' config.log | tail -100 || true
+
+            echo
+            echo "=============================="
+            echo "libftdi"
+            echo "=============================="
+
+            grep -i 'libftdi' config.log | tail -100 || true
+
+          } > configure-details.txt
+
+      - name: Build
+        run: |
+          set -o pipefail
+
+          make V=1 -j"$(nproc)" \
+            2>&1 | tee build-output.txt
+
+      - name: Inspect built executable
+        run: |
+          set -e
+
+          {
+            echo "=============================="
+            echo "FILE"
+            echo "=============================="
+            file ./src/openocd.exe
+
+            echo
+            echo "=============================="
+            echo "VERSION"
+            echo "=============================="
+            ./src/openocd.exe --version
+
+            echo
+            echo "=============================="
+            echo "PE DLL IMPORTS"
+            echo "=============================="
+            objdump -p ./src/openocd.exe |
+              awk '/DLL Name:/{print $3}'
+
+            echo
+            echo "=============================="
+            echo "GCC RUNTIME"
+            echo "=============================="
+            gcc -print-file-name=libgcc_s_seh-1.dll
+            gcc -print-file-name=libwinpthread-1.dll
+
+            echo
+            echo "=============================="
+            echo "JIM SYMBOLS"
+            echo "=============================="
+            nm -C ./src/openocd.exe |
+              grep -E 'Jim_EvalFile|Jim_Eval|Jim_Init|Jim_CreateInterp' |
+              head -100 || true
+
+          } | tee binary-info.txt
+
+      #
+      # Do several tests separately.
+      #
+      # Do NOT let one crash stop diagnostics.
+      #
+      - name: Test command execution
+        continue-on-error: true
+        run: |
+          set +e
+
+          ./src/openocd.exe \
+            -d3 \
+            -c "echo COMMAND_OK" \
+            -c "shutdown"
+
+          code=$?
+
+          echo "exit_code=$code" |
+            tee command-test.txt
+
+          exit 0
+
+      - name: Test empty config file
+        continue-on-error: true
+        run: |
+          set +e
+
+          : > empty.cfg
+
+          ./src/openocd.exe \
+            -d3 \
+            -f empty.cfg \
+            -c "shutdown" \
+            > empty-config.txt 2>&1
+
+          code=$?
+
+          cat empty-config.txt
+
+          echo >> empty-config.txt
+          echo "exit_code=$code" |
+            tee -a empty-config.txt
+
+          exit 0
+
+      - name: Test simple config file
+        continue-on-error: true
+        run: |
+          set +e
+
+          printf 'echo FILE_READ_OK\n' > simple.cfg
+
+          ./src/openocd.exe \
+            -d3 \
+            -f simple.cfg \
+            -c "shutdown" \
+            > simple-config.txt 2>&1
+
+          code=$?
+
+          cat simple-config.txt
+
+          echo >> simple-config.txt
+          echo "exit_code=$code" |
+            tee -a simple-config.txt
+
+          exit 0
+
+      #
+      # This is especially useful:
+      #
+      # -f and "script" should go through essentially the same OpenOCD/Jim
+      # script path, whereas direct Jim source gives us another comparison.
+      #
+      - name: Compare script paths
+        continue-on-error: true
+        run: |
+          set +e
+
+          printf 'echo SCRIPT_PATH_OK\n' > script-path.cfg
+
+          {
+            echo "=============================="
+            echo "-f"
+            echo "=============================="
+
+            ./src/openocd.exe \
+              -d3 \
+              -f script-path.cfg \
+              -c "shutdown"
+
+            echo "-f exit=$?"
+
+            echo
+            echo "=============================="
+            echo "-c script"
+            echo "=============================="
+
+            ./src/openocd.exe \
+              -d3 \
+              -c "script script-path.cfg" \
+              -c "shutdown"
+
+            echo "script exit=$?"
+
+            echo
+            echo "=============================="
+            echo "-c source"
+            echo "=============================="
+
+            ./src/openocd.exe \
+              -d3 \
+              -c "source script-path.cfg" \
+              -c "shutdown"
+
+            echo "source exit=$?"
+
+          } 2>&1 | tee script-paths.txt
+
+          exit 0
+
+      #
+      # Run the minimal file reproducer under GDB.
+      #
+      - name: GDB backtrace for config file
+        continue-on-error: true
+        run: |
+          set +e
+
+          printf 'echo GDB_FILE_OK\n' > gdb-test.cfg
+
+          gdb \
+            -q \
+            -batch \
+            -ex 'set pagination off' \
+            -ex 'set print thread-events off' \
+            -ex 'run' \
+            -ex 'echo \n===== BACKTRACE =====\n' \
+            -ex 'bt' \
+            -ex 'echo \n===== FULL BACKTRACE =====\n' \
+            -ex 'bt full' \
+            -ex 'echo \n===== REGISTERS =====\n' \
+            -ex 'info registers' \
+            -ex 'echo \n===== INSTRUCTIONS =====\n' \
+            -ex 'x/32i $pc-32' \
+            --args \
+            ./src/openocd.exe \
+              -d3 \
+              -f gdb-test.cfg \
+              -c "shutdown" \
+            2>&1 | tee gdb-config.txt
+
+          exit 0
+
+      #
+      # Test your FTDI config parsing without init.
+      # No USB device is required for this.
+      #
+      - name: Test FTDI config parsing
+        continue-on-error: true
+        run: |
+          set +e
+
+          cat > ftdi-test.cfg <<'EOF'
+          adapter speed 1500
+          adapter driver ftdi
+          ftdi vid_pid 0x0403 0x6010
+          ftdi channel 1
+          transport select jtag
+
+          ftdi layout_init 0x0018 0x001b
+
+          ftdi layout_signal nSRST -oe 0x0200
+          ftdi layout_signal nTRST -data 0x0100 -oe 0x0100
+
+          ftdi layout_signal TCK -data 0x0001
+          ftdi layout_signal TDI -data 0x0002
+          ftdi layout_signal TDO -input 0x0004
+          ftdi layout_signal TMS -data 0x0008
+          EOF
+
+          ./src/openocd.exe \
+            -d3 \
+            -f ftdi-test.cfg \
+            -c "shutdown" \
+            > ftdi-test.txt 2>&1
+
+          code=$?
+
+          cat ftdi-test.txt
+
+          echo >> ftdi-test.txt
+          echo "exit_code=$code" |
+            tee -a ftdi-test.txt
+
+          exit 0
+
+      - name: GDB backtrace for FTDI config
+        continue-on-error: true
+        run: |
+          set +e
+
+          gdb \
+            -q \
+            -batch \
+            -ex 'set pagination off' \
+            -ex 'set print thread-events off' \
+            -ex 'run' \
+            -ex 'echo \n===== BACKTRACE =====\n' \
+            -ex 'bt' \
+            -ex 'echo \n===== FULL BACKTRACE =====\n' \
+            -ex 'bt full' \
+            -ex 'echo \n===== REGISTERS =====\n' \
+            -ex 'info registers' \
+            -ex 'echo \n===== INSTRUCTIONS =====\n' \
+            -ex 'x/32i $pc-32' \
+            --args \
+            ./src/openocd.exe \
+              -d3 \
+              -f ftdi-test.cfg \
+              -c "shutdown" \
+            2>&1 | tee gdb-ftdi.txt
+
+          exit 0
+
+      #
+      # Build artifact even if one of diagnostic test runs crashed.
+      #
+      - name: Stage install
+        if: always()
+        run: |
+          rm -rf stage
+          make install DESTDIR="$(pwd)/stage"
+
+      - name: Bundle runtime DLLs
+        if: always()
+        run: |
+          set -e
+
+          DEST="$(pwd)/stage/mingw64/bin"
+
+          declare -a queue
+          declare -A processed
+
+          queue=("$DEST/openocd.exe")
+
+          while [ "${#queue[@]}" -gt 0 ]; do
+            file="${queue[0]}"
+            queue=("${queue[@]:1}")
+
+            file_key="$(cygpath -aw "$file" |
+              tr '[:upper:]' '[:lower:]')"
+
+            if [ -n "${processed[$file_key]+x}" ]; then
+              continue
+            fi
+
+            processed["$file_key"]=1
+
+            while read -r dll; do
+              [ -n "$dll" ] || continue
+
+              source_dll="$(find /mingw64/bin \
+                -maxdepth 1 \
+                -type f \
+                -iname "$dll" \
+                -print \
+                -quit)"
+
+              if [ -z "$source_dll" ]; then
+                continue
+              fi
+
+              dest_dll="$DEST/$(basename "$source_dll")"
+
+              if [ ! -f "$dest_dll" ]; then
+                echo "Bundling $(basename "$source_dll")"
+                cp "$source_dll" "$dest_dll"
+              fi
+
+              queue+=("$dest_dll")
+
+            done < <(
+              objdump -p "$file" |
+                awk '/DLL Name:/{print $3}'
+            )
+          done
+
+          ls -lah "$DEST"
+
+      - name: Upload reference build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openocd-windows-x86_64-reference
+          path: stage/mingw64
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openocd-windows-x86_64-diagnostics
+          path: |
+            build-fingerprint.txt
+            configure-output.txt
+            configure-details.txt
+            build-output.txt
+            binary-info.txt
+            command-test.txt
+            empty-config.txt
+            simple-config.txt
+            script-paths.txt
+            ftdi-test.txt
+            gdb-config.txt
+            gdb-ftdi.txt
+            config.log
