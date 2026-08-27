@@ -176,16 +176,16 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
+          path-type: strict
           install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-libusb
-            mingw-w64-x86_64-libusb-compat-git
-            mingw-w64-x86_64-libftdi
-            mingw-w64-x86_64-hidapi
-            mingw-w64-x86_64-libjaylink
-            mingw-w64-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-libusb
+            mingw-w64-ucrt-x86_64-libftdi
+            mingw-w64-ucrt-x86_64-hidapi
+            mingw-w64-ucrt-x86_64-libjaylink
+            mingw-w64-ucrt-x86_64-pkgconf
             autoconf
             autoconf-archive
             automake
@@ -196,118 +196,320 @@ jobs:
             libtool
             m4
             make
-            tcl
             texinfo
 
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
       - name: Configure
-        run: ./configure --prefix=/mingw64
+        run: |
+          export PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
+          ./configure \
+            --prefix=/ucrt64 \
+            --enable-internal-jimtcl
 
       - name: Build
         run: make -j"$(nproc)"
 
-      - name: Smoke test
-        run: ./src/openocd.exe --version
+      - name: Smoke test build tree
+        run: |
+          set -e
+
+          ./src/openocd.exe --version
+          ./src/openocd.exe -c "shutdown"
+
+          printf 'shutdown\n' > shutdown.cfg
+          ./src/openocd.exe -f shutdown.cfg
 
       - name: Stage install
-        run: make install-strip DESTDIR="$(pwd)/stage"
+        run: |
+          set -e
+          rm -rf stage
+          make install DESTDIR="$(pwd)/stage"
 
       - name: Bundle runtime DLLs
-        run: bash .github/scripts/bundle-mingw-dlls.sh "$(pwd)/stage/mingw64/bin"
+        run: |
+          set -euo pipefail
+
+          DEST="$(pwd)/stage/ucrt64/bin"
+
+          if [ ! -f "$DEST/openocd.exe" ]; then
+            echo "openocd.exe not found in $DEST"
+            exit 1
+          fi
+
+          declare -a queue
+          declare -A processed
+
+          queue=("$DEST/openocd.exe")
+
+          while [ "${#queue[@]}" -gt 0 ]; do
+            file="${queue[0]}"
+            queue=("${queue[@]:1}")
+
+            file_key="$(cygpath -aw "$file" | tr '[:upper:]' '[:lower:]')"
+
+            if [ -n "${processed[$file_key]+x}" ]; then
+              continue
+            fi
+
+            processed["$file_key"]=1
+
+            while read -r dll; do
+              [ -n "$dll" ] || continue
+
+              source_dll="$(find /ucrt64/bin \
+                -maxdepth 1 \
+                -type f \
+                -iname "$dll" \
+                -print \
+                -quit)"
+
+              # DLL not found in UCRT64 means it is normally a Windows
+              # system DLL such as KERNEL32.dll, ucrtbase.dll, etc.
+              if [ -z "$source_dll" ]; then
+                continue
+              fi
+
+              dest_dll="$DEST/$(basename "$source_dll")"
+
+              if [ ! -f "$dest_dll" ]; then
+                echo "Bundling $(basename "$source_dll")"
+                cp "$source_dll" "$dest_dll"
+              fi
+
+              queue+=("$dest_dll")
+            done < <(
+              objdump -p "$file" |
+                awk '/DLL Name:/{print $3}'
+            )
+          done
+
+          echo
+          echo "Bundled files:"
+          ls -la "$DEST"
+
+      - name: Verify staged binary outside MSYS2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $bin = Join-Path $PWD "stage\ucrt64\bin"
+          $openocd = Join-Path $bin "openocd.exe"
+
+          # Do not let the staged binary accidentally load DLLs from
+          # the MSYS2 installation used during the build.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+
+          & $openocd --version
+          if ($LASTEXITCODE -ne 0) {
+              throw "openocd --version failed: $LASTEXITCODE"
+          }
+
+          & $openocd -c "shutdown"
+          if ($LASTEXITCODE -ne 0) {
+              throw "openocd -c shutdown failed: $LASTEXITCODE"
+          }
+
+          $cfg = Join-Path $bin "shutdown.cfg"
+          [System.IO.File]::WriteAllText(
+              $cfg,
+              "shutdown`n",
+              [System.Text.Encoding]::ASCII
+          )
+
+          Push-Location $bin
+          try {
+              .\openocd.exe -f .\shutdown.cfg
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "openocd -f shutdown.cfg failed: $LASTEXITCODE"
+              }
+          }
+          finally {
+              Pop-Location
+          }
+
+          Remove-Item $cfg -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: openocd-windows-x86_64
-          path: stage/mingw64
+          path: stage/ucrt64
 
   windows-arm64:
-    name: Windows (arm64, cross-compiled)
-    runs-on: ubuntu-latest
-    env:
-      TRIPLE: aarch64-w64-mingw32
-      SYSROOT: /tmp/arm64-sysroot
+    name: Windows (arm64)
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
+      - name: Normalize line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install cross-compile prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config texinfo cmake meson ninja-build
-
-      - name: Install llvm-mingw
-        run: |
-          BIN_DIR=$(bash .github/scripts/setup-llvm-mingw.sh /tmp/llvm-mingw)
-          echo "$BIN_DIR" >> "$GITHUB_PATH"
-
-      - name: Cross-build libusb-1.0
-        run: bash .github/scripts/build-libusb-mingw-arm64.sh "$SYSROOT"
-
-      - name: Cross-build libftdi1
-        run: bash .github/scripts/build-libftdi-mingw-arm64.sh "$SYSROOT"
-
-      - name: Cross-build hidapi
-        run: bash .github/scripts/build-hidapi-mingw-arm64.sh "$SYSROOT"
-
-      - name: Cross-build libjaylink
-        run: bash .github/scripts/build-libjaylink-mingw-arm64.sh "$SYSROOT"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          path-type: strict
+          install: >-
+            mingw-w64-clang-aarch64-toolchain
+            mingw-w64-clang-aarch64-libusb
+            mingw-w64-clang-aarch64-libftdi
+            mingw-w64-clang-aarch64-hidapi
+            mingw-w64-clang-aarch64-libjaylink
+            mingw-w64-clang-aarch64-pkgconf
+            autoconf
+            autoconf-archive
+            automake
+            automake-wrapper
+            binutils
+            gettext
+            git
+            libtool
+            m4
+            make
+            texinfo
 
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
       - name: Configure
         run: |
-          export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig"
-          # Makes pkg-config prepend $SYSROOT to the paths baked into the
-          # cross-built .pc files (all generated with --prefix=/usr), so
-          # libftdi1/hidapi/libjaylink auto-detect via PKG_CHECK_MODULES
-          # the same way they do on the native Linux/macOS/Windows-x86_64
-          # jobs. libusb keeps using the hand-set LIBUSB1_CFLAGS/LIBS below
-          # since that's already proven working; this only newly matters
-          # for the three libraries just cross-built above.
-          export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
-          export LIBUSB1_CFLAGS="-I$SYSROOT/usr/include/libusb-1.0"
-          export LIBUSB1_LIBS="-L$SYSROOT/usr/lib -lusb-1.0"
-          export CC="$TRIPLE-clang"
-          # llvm-mingw's own SDK headers expand FD_SET as a SOCKET (unsigned
-          # 64-bit) vs int comparison; openocd's socket fields are plain int
-          # throughout src/server/*, a pre-existing mismatch never exercised
-          # on any other toolchain here. Downgrade just this diagnostic
-          # rather than touching -Werror globally or the socket type.
-          export CFLAGS="-g -O2 -Wno-error=sign-compare"
-          ./configure --host="$TRIPLE" --prefix=/usr
+          export PKG_CONFIG_PATH=/clangarm64/lib/pkgconfig:/clangarm64/share/pkgconfig
+          ./configure \
+            --prefix=/clangarm64 \
+            --enable-internal-jimtcl
 
       - name: Build
         run: make -j"$(nproc)"
 
-      - name: Verify binary architecture
-        run: file src/openocd.exe | tee /dev/stderr | grep -q 'Aarch64'
+      - name: Smoke test build tree
+        run: |
+          set -e
+
+          ./src/openocd.exe --version
+          ./src/openocd.exe -c "shutdown"
+
+          printf 'shutdown\n' > shutdown.cfg
+          ./src/openocd.exe -f shutdown.cfg
 
       - name: Stage install
-        run: make install-strip DESTDIR="$(pwd)/stage"
+        run: |
+          set -e
+          rm -rf stage
+          make install DESTDIR="$(pwd)/stage"
 
       - name: Bundle runtime DLLs
         run: |
-          # llvm-mingw ships llvm-objdump; whether it also installs a
-          # $TRIPLE-prefixed wrapper for it varies by release.
-          OBJDUMP=$(command -v "$TRIPLE-objdump" || command -v llvm-objdump)
-          SEARCH_DIRS="/tmp/llvm-mingw/$TRIPLE/bin $SYSROOT/usr/bin"
-          for dll in $("$OBJDUMP" -p "$(pwd)/stage/usr/bin/openocd.exe" | awk '/DLL Name:/{print $3}'); do
-            for dir in $SEARCH_DIRS; do
-              if [ -f "$dir/$dll" ]; then
-                cp -u "$dir/$dll" "$(pwd)/stage/usr/bin/"
-                break
+          set -euo pipefail
+
+          DEST="$(pwd)/stage/clangarm64/bin"
+
+          if [ ! -f "$DEST/openocd.exe" ]; then
+            echo "openocd.exe not found in $DEST"
+            exit 1
+          fi
+
+          declare -a queue
+          declare -A processed
+
+          queue=("$DEST/openocd.exe")
+
+          while [ "${#queue[@]}" -gt 0 ]; do
+            file="${queue[0]}"
+            queue=("${queue[@]:1}")
+
+            file_key="$(cygpath -aw "$file" | tr '[:upper:]' '[:lower:]')"
+
+            if [ -n "${processed[$file_key]+x}" ]; then
+              continue
+            fi
+
+            processed["$file_key"]=1
+
+            while read -r dll; do
+              [ -n "$dll" ] || continue
+
+              source_dll="$(find /clangarm64/bin \
+                -maxdepth 1 \
+                -type f \
+                -iname "$dll" \
+                -print \
+                -quit)"
+
+              if [ -z "$source_dll" ]; then
+                continue
               fi
-            done
+
+              dest_dll="$DEST/$(basename "$source_dll")"
+
+              if [ ! -f "$dest_dll" ]; then
+                echo "Bundling $(basename "$source_dll")"
+                cp "$source_dll" "$dest_dll"
+              fi
+
+              queue+=("$dest_dll")
+            done < <(
+              objdump -p "$file" |
+                awk '/DLL Name:/{print $3}'
+            )
           done
+
+          echo
+          echo "Bundled files:"
+          ls -la "$DEST"
+
+      - name: Verify staged binary outside MSYS2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $bin = Join-Path $PWD "stage\clangarm64\bin"
+          $openocd = Join-Path $bin "openocd.exe"
+
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+
+          & $openocd --version
+          if ($LASTEXITCODE -ne 0) {
+              throw "openocd --version failed: $LASTEXITCODE"
+          }
+
+          & $openocd -c "shutdown"
+          if ($LASTEXITCODE -ne 0) {
+              throw "openocd -c shutdown failed: $LASTEXITCODE"
+          }
+
+          $cfg = Join-Path $bin "shutdown.cfg"
+          [System.IO.File]::WriteAllText(
+              $cfg,
+              "shutdown`n",
+              [System.Text.Encoding]::ASCII
+          )
+
+          Push-Location $bin
+          try {
+              .\openocd.exe -f .\shutdown.cfg
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "openocd -f shutdown.cfg failed: $LASTEXITCODE"
+              }
+          }
+          finally {
+              Pop-Location
+          }
+
+          Remove-Item $cfg -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: openocd-windows-arm64
-          path: stage/usr
+          path: stage/clangarm64
