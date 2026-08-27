@@ -198,6 +198,36 @@ jobs:
             make
             texinfo
 
+      - name: Build JimTcl
+        run: |
+          set -e
+
+          rm -rf /tmp/jimtcl-0.83
+
+          git clone \
+            --depth 1 \
+            --branch 0.83 \
+            https://github.com/msteveb/jimtcl.git \
+            /tmp/jimtcl-0.83
+
+          cd /tmp/jimtcl-0.83
+
+          ./configure \
+            --prefix=/ucrt64 \
+            --with-ext=json \
+            --minimal \
+            --disable-ssl
+
+          make -j"$(nproc)"
+
+          # Required by JimTcl static Windows install.
+          touch build-jim-ext
+
+          make install
+
+          pkg-config --modversion jimtcl
+          pkg-config --libs jimtcl
+
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
@@ -206,7 +236,7 @@ jobs:
           export PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
           ./configure \
             --prefix=/ucrt64 \
-            --enable-internal-jimtcl
+            --disable-internal-jimtcl
 
       - name: Build
         run: make -j"$(nproc)"
@@ -378,15 +408,45 @@ jobs:
             make
             texinfo
 
+      - name: Build JimTcl
+        run: |
+          set -e
+
+          rm -rf /tmp/jimtcl-0.83
+
+          git clone \
+            --depth 1 \
+            --branch 0.83 \
+            https://github.com/msteveb/jimtcl.git \
+            /tmp/jimtcl-0.83
+
+          cd /tmp/jimtcl-0.83
+
+          ./configure \
+            --prefix=/clangarm64 \
+            --with-ext=json \
+            --minimal \
+            --disable-ssl
+
+          make -j"$(nproc)"
+
+          touch build-jim-ext
+
+          make install
+
+          pkg-config --modversion jimtcl
+
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
       - name: Configure
         run: |
           export PKG_CONFIG_PATH=/clangarm64/lib/pkgconfig:/clangarm64/share/pkgconfig
+          export CFLAGS="-g -O2 -Wno-error=sign-compare"
+
           ./configure \
             --prefix=/clangarm64 \
-            --enable-internal-jimtcl
+            --disable-internal-jimtcl
 
       - name: Build
         run: make -j"$(nproc)"
