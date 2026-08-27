@@ -573,8 +573,30 @@ jobs:
           path: stage/clangarm64
 
   windows-x86_64-reference:
-    name: Windows (x86_64, native MSYS2 reference)
+    name: Windows x86_64 JimTcl 0.82 (${{ matrix.variant }})
     runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: O0
+            cflags: "-g3 -O0 -fno-omit-frame-pointer"
+
+          - variant: O1
+            cflags: "-g3 -O1 -fno-omit-frame-pointer"
+
+          - variant: O2
+            cflags: "-g3 -O2 -fno-omit-frame-pointer"
+
+          - variant: O2-no-strict-aliasing
+            cflags: "-g3 -O2 -fno-strict-aliasing -fno-omit-frame-pointer"
+
+          - variant: O2-fwrapv
+            cflags: "-g3 -O2 -fwrapv -fno-omit-frame-pointer"
+
+    env:
+      CFLAGS: ${{ matrix.cflags }}
 
     defaults:
       run:
@@ -654,6 +676,8 @@ jobs:
             echo "MINGW_PREFIX=$MINGW_PREFIX"
             echo "MINGW_CHOST=$MINGW_CHOST"
             echo "MSYSTEM_CARCH=$MSYSTEM_CARCH"
+            echo "CFLAGS=$CFLAGS"
+            echo "MATRIX_VARIANT=${{ matrix.variant }}"
             uname -a
 
             echo
@@ -726,10 +750,46 @@ jobs:
         run: |
           set -o pipefail
 
+          echo "================================"
+          echo "Build variant: ${{ matrix.variant }}"
+          echo "CFLAGS=$CFLAGS"
+          echo "================================"
+
           ./configure \
             --prefix=/mingw64 \
             --enable-internal-jimtcl \
             2>&1 | tee configure-output.txt
+
+      - name: Verify compiler flags
+        run: |
+          set -e
+
+          {
+            echo "================================"
+            echo "VARIANT"
+            echo "================================"
+            echo "${{ matrix.variant }}"
+
+            echo
+            echo "================================"
+            echo "ENVIRONMENT CFLAGS"
+            echo "================================"
+            echo "$CFLAGS"
+
+            echo
+            echo "================================"
+            echo "OPENOCD MAKEFILE FLAGS"
+            echo "================================"
+            grep -E '^(CFLAGS|CPPFLAGS)[[:space:]]*=' Makefile || true
+
+            echo
+            echo "================================"
+            echo "JIMTCL MAKEFILE FLAGS"
+            echo "================================"
+            grep -E '^(CFLAGS|CPPFLAGS|AS_CFLAGS|AS_CPPFLAGS)[[:space:]]*=' \
+              jimtcl/Makefile || true
+
+          } | tee compiler-flags.txt
 
       - name: Save configure summary
         if: always()
@@ -782,6 +842,13 @@ jobs:
 
             echo
             echo "=============================="
+            echo "BUILD VARIANT"
+            echo "=============================="
+            echo "variant=${{ matrix.variant }}"
+            echo "CFLAGS=$CFLAGS"
+
+            echo
+            echo "=============================="
             echo "PE DLL IMPORTS"
             echo "=============================="
             objdump -p ./src/openocd.exe |
@@ -799,8 +866,8 @@ jobs:
             echo "JIM SYMBOLS"
             echo "=============================="
             nm -C ./src/openocd.exe |
-              grep -E 'Jim_EvalFile|Jim_Eval|Jim_Init|Jim_CreateInterp' |
-              head -100 || true
+              grep -E 'JimInvokeCommand|Jim_EvalFile|Jim_Eval|Jim_Init|Jim_CreateInterp|Jim_DecrRefCount' |
+              head -200 || true
 
           } | tee binary-info.txt
 
@@ -928,33 +995,46 @@ jobs:
       #
       # Run the minimal file reproducer under GDB.
       #
-      - name: GDB backtrace for config file
+      - name: GDB backtrace for empty config
         continue-on-error: true
         run: |
           set +e
 
-          printf 'echo GDB_FILE_OK\n' > gdb-test.cfg
+          : > gdb-empty.cfg
 
           gdb \
             -q \
             -batch \
             -ex 'set pagination off' \
             -ex 'set print thread-events off' \
+            -ex 'set print pretty on' \
+            -ex 'set disassemble-next-line on' \
+            -ex 'set confirm off' \
             -ex 'run' \
+            -ex 'echo \n===== CURRENT FRAME =====\n' \
+            -ex 'frame 0' \
             -ex 'echo \n===== BACKTRACE =====\n' \
             -ex 'bt' \
-            -ex 'echo \n===== FULL BACKTRACE =====\n' \
-            -ex 'bt full' \
+            -ex 'echo \n===== ALL THREADS =====\n' \
+            -ex 'thread apply all bt full' \
+            -ex 'echo \n===== FRAME 0 ARGS =====\n' \
+            -ex 'info args' \
+            -ex 'echo \n===== FRAME 0 LOCALS =====\n' \
+            -ex 'info locals' \
+            -ex 'echo \n===== SOURCE =====\n' \
+            -ex 'list' \
             -ex 'echo \n===== REGISTERS =====\n' \
             -ex 'info registers' \
-            -ex 'echo \n===== INSTRUCTIONS =====\n' \
-            -ex 'x/32i $pc-32' \
+            -ex 'echo \n===== PC INSTRUCTIONS =====\n' \
+            -ex 'x/48i $pc-64' \
+            -ex 'echo \n===== JIM INVOKE DISASSEMBLY =====\n' \
+            -ex 'disassemble /m JimInvokeCommand' \
             --args \
             ./src/openocd.exe \
               -d3 \
-              -f gdb-test.cfg \
+              -f gdb-empty.cfg \
               -c "shutdown" \
-            2>&1 | tee gdb-config.txt
+            2>&1 | tee gdb-empty.txt
 
           exit 0
 
@@ -1011,15 +1091,28 @@ jobs:
             -batch \
             -ex 'set pagination off' \
             -ex 'set print thread-events off' \
+            -ex 'set print pretty on' \
+            -ex 'set disassemble-next-line on' \
+            -ex 'set confirm off' \
             -ex 'run' \
+            -ex 'echo \n===== CURRENT FRAME =====\n' \
+            -ex 'frame 0' \
             -ex 'echo \n===== BACKTRACE =====\n' \
             -ex 'bt' \
-            -ex 'echo \n===== FULL BACKTRACE =====\n' \
-            -ex 'bt full' \
+            -ex 'echo \n===== ALL THREADS =====\n' \
+            -ex 'thread apply all bt full' \
+            -ex 'echo \n===== FRAME 0 ARGS =====\n' \
+            -ex 'info args' \
+            -ex 'echo \n===== FRAME 0 LOCALS =====\n' \
+            -ex 'info locals' \
+            -ex 'echo \n===== SOURCE =====\n' \
+            -ex 'list' \
             -ex 'echo \n===== REGISTERS =====\n' \
             -ex 'info registers' \
-            -ex 'echo \n===== INSTRUCTIONS =====\n' \
-            -ex 'x/32i $pc-32' \
+            -ex 'echo \n===== PC INSTRUCTIONS =====\n' \
+            -ex 'x/48i $pc-64' \
+            -ex 'echo \n===== JIM INVOKE DISASSEMBLY =====\n' \
+            -ex 'disassemble /m JimInvokeCommand' \
             --args \
             ./src/openocd.exe \
               -d3 \
@@ -1098,16 +1191,17 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openocd-windows-x86_64-reference
+          name: openocd-windows-x86_64-reference-${{ matrix.variant }}
           path: stage/mingw64
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openocd-windows-x86_64-diagnostics
+          name: openocd-windows-x86_64-diagnostics-${{ matrix.variant }}
           path: |
             build-fingerprint.txt
+            compiler-flags.txt
             configure-output.txt
             configure-details.txt
             build-output.txt
@@ -1117,6 +1211,6 @@ jobs:
             simple-config.txt
             script-paths.txt
             ftdi-test.txt
-            gdb-config.txt
+            gdb-empty.txt
             gdb-ftdi.txt
             config.log
