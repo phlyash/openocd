@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  macos-arm64:
-    name: macOS (arm64)
+  macos-aarch64:
+    name: macOS (aarch64)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -33,64 +33,92 @@ jobs:
       - name: Build
         run: make -j"$(sysctl -n hw.ncpu)"
 
-      - name: Smoke test
-        run: ./src/openocd --version
+      - name: Smoke test build tree
+        run: |
+          set -euo pipefail
+
+          printf 'echo FILE_READ_OK\nshutdown\n' > read-test.cfg
+          output="$(./src/openocd -f read-test.cfg 2>&1)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -Fq FILE_READ_OK
+          rm -f read-test.cfg
 
       - name: Stage install
-        run: make install-strip DESTDIR="$(pwd)/stage"
+        run: |
+          set -euo pipefail
+          rm -rf stage dist
+          make install-strip DESTDIR="$(pwd)/stage"
 
       - name: Bundle Homebrew runtime libraries
         run: |
-          mkdir -p stage/usr/local/lib
-          BIN=stage/usr/local/bin/openocd
-          # Copy every Homebrew-provided dylib openocd (transitively) depends on
+          set -euo pipefail
+
+          DEST="$(pwd)/stage/usr/local/bin"
+          BIN="$DEST/openocd"
           queue="$BIN"
+
           while [ -n "$queue" ]; do
             next=""
-            for f in $queue; do
-              for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^(/opt/homebrew|/usr/local)/'); do
-                base=$(basename "$dep")
-                dest="stage/usr/local/lib/$base"
-                if [ ! -f "$dest" ]; then
-                  cp "$dep" "$dest"
-                  chmod u+w "$dest"
-                  next="$next $dest"
+
+            for file in $queue; do
+              while read -r dependency; do
+                [ -n "$dependency" ] || continue
+
+                base="$(basename "$dependency")"
+                bundled="$DEST/$base"
+
+                if [ ! -f "$bundled" ]; then
+                  cp "$dependency" "$bundled"
+                  chmod u+w "$bundled"
+                  next="$next $bundled"
                 fi
-                install_name_tool -change "$dep" "@loader_path/../lib/$base" "$f"
-              done
+
+                install_name_tool -change "$dependency" "@loader_path/$base" "$file"
+              done < <(
+                otool -L "$file" |
+                  tail -n +2 |
+                  awk '{print $1}' |
+                  grep -E '^(/opt/homebrew|/usr/local)/' || true
+              )
             done
+
             queue="$next"
           done
-          codesign --force --sign - "$BIN"
-          for f in stage/usr/local/lib/*.dylib; do
-            [ -f "$f" ] || continue
-            codesign --force --sign - "$f"
+
+          for library in "$DEST"/*.dylib; do
+            [ -f "$library" ] || continue
+            codesign --force --sign - "$library"
           done
+          codesign --force --sign - "$BIN"
 
-      - name: Verify staged binary runs without external library help
+      - name: Verify staged program
         run: |
-          cd stage/usr/local/bin
-          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH ./openocd --version
+          set -euo pipefail
 
-      - name: Upload artifact
+          cd stage/usr/local/bin
+          printf 'echo FILE_READ_OK\nshutdown\n' > read-test.cfg
+          output="$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH ./openocd -f read-test.cfg 2>&1)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -Fq FILE_READ_OK
+          rm -f read-test.cfg
+
+      - name: Create release archives
+        run: |
+          .github/scripts/package-release.sh stage/usr/local dist openocd-macos-aarch64
+
+      - name: Upload release archives
         uses: actions/upload-artifact@v4
         with:
-          name: openocd-macos-arm64
-          path: stage/usr/local
+          name: openocd-macos-aarch64
+          path: |
+            dist/openocd-macos-aarch64.tar.gz
+            dist/openocd-macos-aarch64.zip
+          if-no-files-found: error
+          compression-level: 0
 
-  linux:
-    name: Linux (${{ matrix.arch }}, glibc 2.17)
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-            image: quay.io/pypa/manylinux2014_x86_64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            image: quay.io/pypa/manylinux2014_aarch64
+  linux-x86_64:
+    name: Linux (x86_64, glibc 2.17)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,64 +127,100 @@ jobs:
 
       - name: Start build container
         run: |
-          docker run -d --name build \
-            -v "${{ github.workspace }}":/src -w /src \
-            ${{ matrix.image }} \
-            sleep infinity
-          docker exec build git config --global --add safe.directory /src
+          docker run -d --name openocd-build -v "${{ github.workspace }}":/src -w /src quay.io/pypa/manylinux2014_x86_64 sleep infinity
+          docker exec openocd-build git config --global --add safe.directory /src
 
       - name: Install build dependencies
-        run: docker exec build bash .github/scripts/build-linux-deps.sh
+        run: |
+          docker exec openocd-build bash .github/scripts/build-linux-deps.sh
+
+      - name: Test release helpers
+        run: |
+          docker exec openocd-build bash .github/scripts/test-package-release.sh
+          docker exec openocd-build env -u LD_LIBRARY_PATH bash .github/scripts/test-linux-openocd-wrapper.sh
 
       - name: Bootstrap
-        run: docker exec build ./bootstrap nosubmodule
+        run: docker exec openocd-build ./bootstrap nosubmodule
 
       - name: Configure
         run: |
-          docker exec \
-            -e PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-            build ./configure --prefix=/usr/local
+          docker exec -e PKG_CONFIG_PATH=/usr/local/lib/pkgconfig openocd-build ./configure --prefix=/usr/local
 
       - name: Build
-        run: docker exec build bash -c 'make -j"$(nproc)"'
+        run: |
+          docker exec openocd-build bash -c 'make -j"$(nproc)"'
 
-      - name: Smoke test
-        run: docker exec -e LD_LIBRARY_PATH=/usr/local/lib build ./src/openocd --version
+      - name: Smoke test build tree
+        run: |
+          docker exec -e LD_LIBRARY_PATH=/usr/local/lib openocd-build bash -c '
+              set -euo pipefail
+              printf "echo FILE_READ_OK\nshutdown\n" > read-test.cfg
+              output="$(./src/openocd -f read-test.cfg 2>&1)"
+              printf "%s\n" "$output"
+              printf "%s\n" "$output" | grep -Fq FILE_READ_OK
+              rm -f read-test.cfg
+            '
 
       - name: Stage install
-        run: docker exec build bash -c 'make install-strip DESTDIR=/src/stage'
-
-      - name: Bundle custom-built runtime libraries
         run: |
-          docker exec build bash -c '
-            set -e
-            mkdir -p stage/usr/local/lib
-            cp -a /usr/local/lib/libusb-1.0.so* stage/usr/local/lib/
-            cp -a /usr/local/lib/libftdi1.so* stage/usr/local/lib/
-            cp -a /usr/local/lib/libhidapi-hidraw.so* stage/usr/local/lib/
-            cp -a /usr/local/lib/libjaylink.so* stage/usr/local/lib/
-            mv stage/usr/local/bin/openocd stage/usr/local/bin/openocd.bin
-            cp .github/scripts/linux-openocd-wrapper.sh stage/usr/local/bin/openocd
-            chmod +x stage/usr/local/bin/openocd
+          docker exec openocd-build bash -c '
+            set -euo pipefail
+            rm -rf stage dist
+            make install-strip DESTDIR=/src/stage
           '
 
-      - name: Verify staged binary runs without external library help
+      - name: Bundle runtime libraries
         run: |
-          docker exec build bash -c '
-            set -e
+          docker exec openocd-build bash -c '
+            set -euo pipefail
+
+            DEST=stage/usr/local/bin
+            mkdir -p "$DEST"
+
+            for pattern in "/usr/local/lib/libusb-1.0.so*" "/usr/local/lib/libftdi1.so*" "/usr/local/lib/libhidapi-hidraw.so*" "/usr/local/lib/libjaylink.so*"
+            do
+              for library in $pattern; do
+                [ -e "$library" ] || continue
+                cp -L "$library" "$DEST/$(basename "$library")"
+              done
+            done
+
+            rm -rf stage/usr/local/lib
+            mv "$DEST/openocd" "$DEST/openocd.bin"
+            cp .github/scripts/linux-openocd-wrapper.sh "$DEST/openocd"
+            chmod +x "$DEST/openocd"
+          '
+
+      - name: Verify staged program
+        run: |
+          docker exec openocd-build bash -c '
+            set -euo pipefail
+
             cd stage/usr/local/bin
-            env -u LD_LIBRARY_PATH ./openocd --version
+            printf "echo FILE_READ_OK\nshutdown\n" > read-test.cfg
+            output="$(env -u LD_LIBRARY_PATH ./openocd -f read-test.cfg 2>&1)"
+            printf "%s\n" "$output"
+            printf "%s\n" "$output" | grep -Fq FILE_READ_OK
+            rm -f read-test.cfg
           '
+
+      - name: Create release archives
+        run: |
+          docker exec openocd-build bash .github/scripts/package-release.sh stage/usr/local dist openocd-linux-x86_64
 
       - name: Stop build container
         if: always()
-        run: docker rm -f build
+        run: docker rm -f openocd-build
 
-      - name: Upload artifact
+      - name: Upload release archives
         uses: actions/upload-artifact@v4
         with:
-          name: openocd-linux-${{ matrix.arch }}
-          path: stage/usr/local
+          name: openocd-linux-x86_64
+          path: |
+            dist/openocd-linux-x86_64.tar.gz
+            dist/openocd-linux-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0
 
   windows-x86_64:
     name: Windows (x86_64)
@@ -197,63 +261,40 @@ jobs:
             m4
             make
             texinfo
-
-      - name: Build JimTcl
-        run: |
-          set -e
-
-          rm -rf /tmp/jimtcl-0.82
-
-          git clone \
-            --depth 1 \
-            --branch 0.82 \
-            https://github.com/msteveb/jimtcl.git \
-            /tmp/jimtcl-0.82
-
-          cd /tmp/jimtcl-0.82
-
-          ./configure \
-            --prefix=/ucrt64 \
-            --with-ext=json \
-            --minimal \
-            --disable-ssl
-
-          make -j"$(nproc)"
-          touch build-jim-ext
-          make install
-
-          pkg-config --modversion jimtcl
-          pkg-config --cflags jimtcl
-          pkg-config --libs jimtcl
+            zip
 
       - name: Bootstrap
         run: ./bootstrap nosubmodule
 
-      - name: Configure
+      - name: Configure release build
         run: |
-          export PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
-          ./configure \
-            --prefix=/ucrt64 \
-            --disable-internal-jimtcl
+          set -euo pipefail
+
+          CFLAGS="-O2" CPPFLAGS="-D_FILE_OFFSET_BITS=64" ./configure --prefix=/ucrt64 --enable-internal-jimtcl
+
+          grep -F -- '-D_FILE_OFFSET_BITS=64' jimtcl/Makefile
 
       - name: Build
         run: make -j"$(nproc)"
 
       - name: Smoke test build tree
         run: |
-          set -e
+          set -euo pipefail
 
           ./src/openocd.exe --version
           ./src/openocd.exe -c "shutdown"
 
-          printf 'shutdown\n' > shutdown.cfg
-          ./src/openocd.exe -f shutdown.cfg
+          printf 'echo FILE_READ_OK\nshutdown\n' > read-test.cfg
+          output="$(./src/openocd.exe -f read-test.cfg 2>&1)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -Fq FILE_READ_OK
+          rm -f read-test.cfg
 
       - name: Stage install
         run: |
-          set -e
-          rm -rf stage
-          make install DESTDIR="$(pwd)/stage"
+          set -euo pipefail
+          rm -rf stage dist
+          make install-strip DESTDIR="$(pwd)/stage"
 
       - name: Bundle runtime DLLs
         run: |
@@ -262,71 +303,57 @@ jobs:
           DEST="$(pwd)/stage/ucrt64/bin"
 
           if [ ! -f "$DEST/openocd.exe" ]; then
-            echo "openocd.exe not found in $DEST"
+            echo "openocd.exe not found in $DEST" >&2
             exit 1
           fi
 
           declare -a queue
           declare -A processed
-
           queue=("$DEST/openocd.exe")
 
           while [ "${#queue[@]}" -gt 0 ]; do
             file="${queue[0]}"
             queue=("${queue[@]:1}")
-
             file_key="$(cygpath -aw "$file" | tr '[:upper:]' '[:lower:]')"
 
             if [ -n "${processed[$file_key]+x}" ]; then
               continue
             fi
-
             processed["$file_key"]=1
 
             while read -r dll; do
               [ -n "$dll" ] || continue
 
-              source_dll="$(find /ucrt64/bin \
-                -maxdepth 1 \
-                -type f \
-                -iname "$dll" \
-                -print \
-                -quit)"
+              source_dll="$(find /ucrt64/bin -maxdepth 1 -type f -iname "$dll" -print -quit)"
 
-              # DLL not found in UCRT64 means it is normally a Windows
-              # system DLL such as KERNEL32.dll, ucrtbase.dll, etc.
+              # Missing from UCRT64 means this is normally a Windows
+              # system DLL, such as KERNEL32.dll or ucrtbase.dll.
               if [ -z "$source_dll" ]; then
                 continue
               fi
 
-              dest_dll="$DEST/$(basename "$source_dll")"
-
-              if [ ! -f "$dest_dll" ]; then
-                echo "Bundling $(basename "$source_dll")"
-                cp "$source_dll" "$dest_dll"
+              bundled="$DEST/$(basename "$source_dll")"
+              if [ ! -f "$bundled" ]; then
+                cp "$source_dll" "$bundled"
               fi
-
-              queue+=("$dest_dll")
+              queue+=("$bundled")
             done < <(
               objdump -p "$file" |
                 awk '/DLL Name:/{print $3}'
             )
           done
 
-          echo
-          echo "Bundled files:"
-          ls -la "$DEST"
-
-      - name: Verify staged binary outside MSYS2
+      - name: Verify staged program outside MSYS2
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $bin = Join-Path $PWD "stage\ucrt64\bin"
           $openocd = Join-Path $bin "openocd.exe"
+          $cfg = Join-Path $bin "read-test.cfg"
 
-          # Do not let the staged binary accidentally load DLLs from
-          # the MSYS2 installation used during the build.
+          # The executable must resolve every bundled DLL without using
+          # the MSYS2 installation that built it.
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
 
           & $openocd --version
@@ -339,868 +366,40 @@ jobs:
               throw "openocd -c shutdown failed: $LASTEXITCODE"
           }
 
-          $cfg = Join-Path $bin "shutdown.cfg"
           [System.IO.File]::WriteAllText(
               $cfg,
-              "shutdown`n",
+              "echo FILE_READ_OK`nshutdown`n",
               [System.Text.Encoding]::ASCII
           )
 
           Push-Location $bin
           try {
-              .\openocd.exe -f .\shutdown.cfg
+              $output = & .\openocd.exe -f .\read-test.cfg 2>&1
+              $exitCode = $LASTEXITCODE
+              $output | ForEach-Object { Write-Host $_ }
 
-              if ($LASTEXITCODE -ne 0) {
-                  throw "openocd -f shutdown.cfg failed: $LASTEXITCODE"
+              if ($exitCode -ne 0) {
+                  throw "openocd -f read-test.cfg failed: $exitCode"
+              }
+              if (($output -join "`n") -notmatch "FILE_READ_OK") {
+                  throw "openocd did not execute read-test.cfg"
               }
           }
           finally {
               Pop-Location
+              Remove-Item $cfg -Force
           }
 
-          Remove-Item $cfg -Force
+      - name: Create release archives
+        run: |
+          .github/scripts/package-release.sh stage/ucrt64 dist openocd-windows-x86_64
 
-      - name: Upload artifact
+      - name: Upload release archives
         uses: actions/upload-artifact@v4
         with:
           name: openocd-windows-x86_64
-          path: stage/ucrt64
-
-  windows-arm64:
-    name: Windows (arm64)
-    runs-on: windows-11-arm
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Normalize line endings
-        shell: pwsh
-        run: git config --global core.autocrlf input
-
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          path-type: strict
-          install: >-
-            mingw-w64-clang-aarch64-toolchain
-            mingw-w64-clang-aarch64-libusb
-            mingw-w64-clang-aarch64-libftdi
-            mingw-w64-clang-aarch64-hidapi
-            mingw-w64-clang-aarch64-libjaylink
-            mingw-w64-clang-aarch64-pkgconf
-            autoconf
-            autoconf-archive
-            automake
-            automake-wrapper
-            binutils
-            gettext
-            git
-            libtool
-            m4
-            make
-            texinfo
-
-      - name: Build JimTcl
-        run: |
-          set -e
-
-          rm -rf /tmp/jimtcl-0.82
-
-          git clone \
-            --depth 1 \
-            --branch 0.82 \
-            https://github.com/msteveb/jimtcl.git \
-            /tmp/jimtcl-0.82
-
-          cd /tmp/jimtcl-0.82
-
-          ./configure \
-            --prefix=/clangarm64 \
-            --with-ext=json \
-            --minimal \
-            --disable-ssl
-
-          make -j"$(nproc)"
-          touch build-jim-ext
-          make install
-
-          pkg-config --modversion jimtcl
-          pkg-config --cflags jimtcl
-          pkg-config --libs jimtcl
-
-      - name: Bootstrap
-        run: ./bootstrap nosubmodule
-
-      - name: Configure
-        run: |
-          export PKG_CONFIG_PATH=/clangarm64/lib/pkgconfig:/clangarm64/share/pkgconfig
-          export CFLAGS="-g -O2 -Wno-error=sign-compare"
-
-          ./configure \
-            --prefix=/clangarm64 \
-            --disable-internal-jimtcl
-
-      - name: Build
-        run: make -j"$(nproc)"
-
-      - name: Smoke test build tree
-        run: |
-          set -e
-
-          ./src/openocd.exe --version
-          ./src/openocd.exe -c "shutdown"
-
-          printf 'shutdown\n' > shutdown.cfg
-          ./src/openocd.exe -f shutdown.cfg
-
-      - name: Stage install
-        run: |
-          set -e
-          rm -rf stage
-          make install DESTDIR="$(pwd)/stage"
-
-      - name: Bundle runtime DLLs
-        run: |
-          set -euo pipefail
-
-          DEST="$(pwd)/stage/clangarm64/bin"
-
-          if [ ! -f "$DEST/openocd.exe" ]; then
-            echo "openocd.exe not found in $DEST"
-            exit 1
-          fi
-
-          declare -a queue
-          declare -A processed
-
-          queue=("$DEST/openocd.exe")
-
-          while [ "${#queue[@]}" -gt 0 ]; do
-            file="${queue[0]}"
-            queue=("${queue[@]:1}")
-
-            file_key="$(cygpath -aw "$file" | tr '[:upper:]' '[:lower:]')"
-
-            if [ -n "${processed[$file_key]+x}" ]; then
-              continue
-            fi
-
-            processed["$file_key"]=1
-
-            while read -r dll; do
-              [ -n "$dll" ] || continue
-
-              source_dll="$(find /clangarm64/bin \
-                -maxdepth 1 \
-                -type f \
-                -iname "$dll" \
-                -print \
-                -quit)"
-
-              if [ -z "$source_dll" ]; then
-                continue
-              fi
-
-              dest_dll="$DEST/$(basename "$source_dll")"
-
-              if [ ! -f "$dest_dll" ]; then
-                echo "Bundling $(basename "$source_dll")"
-                cp "$source_dll" "$dest_dll"
-              fi
-
-              queue+=("$dest_dll")
-            done < <(
-              objdump -p "$file" |
-                awk '/DLL Name:/{print $3}'
-            )
-          done
-
-          echo
-          echo "Bundled files:"
-          ls -la "$DEST"
-
-      - name: Verify staged binary outside MSYS2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $bin = Join-Path $PWD "stage\clangarm64\bin"
-          $openocd = Join-Path $bin "openocd.exe"
-
-          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-
-          & $openocd --version
-          if ($LASTEXITCODE -ne 0) {
-              throw "openocd --version failed: $LASTEXITCODE"
-          }
-
-          & $openocd -c "shutdown"
-          if ($LASTEXITCODE -ne 0) {
-              throw "openocd -c shutdown failed: $LASTEXITCODE"
-          }
-
-          $cfg = Join-Path $bin "shutdown.cfg"
-          [System.IO.File]::WriteAllText(
-              $cfg,
-              "shutdown`n",
-              [System.Text.Encoding]::ASCII
-          )
-
-          Push-Location $bin
-          try {
-              .\openocd.exe -f .\shutdown.cfg
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "openocd -f shutdown.cfg failed: $LASTEXITCODE"
-              }
-          }
-          finally {
-              Pop-Location
-          }
-
-          Remove-Item $cfg -Force
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: openocd-windows-arm64
-          path: stage/clangarm64
-
-  windows-x86_64-reference:
-    name: Windows x86_64 JimTcl 0.82 (${{ matrix.variant }})
-    runs-on: windows-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: O0
-            cflags: "-g3 -O0 -fno-omit-frame-pointer"
-          - variant: O2
-            cflags: "-g3 -O2 -fno-omit-frame-pointer"
-
-    env:
-      CFLAGS: ${{ matrix.cflags }}
-
-    defaults:
-      run:
-        shell: msys2 {0}
-
-    steps:
-      - name: Normalize line endings
-        shell: pwsh
-        run: git config --global core.autocrlf input
-
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      # Important:
-      # release: false -> use MSYS2 already installed on windows-latest
-      # cache: false   -> do not reuse setup-msys2 package cache
-      # update: false  -> do not upgrade the whole MSYS2 installation
-      #
-      # This is intentionally MINGW64 because we want a reference build
-      # close to a normal/manual MSYS2 build first.
-      - uses: msys2/setup-msys2@v2
-        id: msys2
-        with:
-          msystem: MINGW64
-          release: false
-          update: false
-          cache: false
-          path-type: minimal
-          suppress-deprecation-warnings: msystem-mingw64
-          install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-libusb
-            mingw-w64-x86_64-libftdi
-            mingw-w64-x86_64-hidapi
-            mingw-w64-x86_64-libjaylink
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-gdb
-            autoconf
-            autoconf-archive
-            automake
-            binutils
-            gettext
-            git
-            libtool
-            m4
-            make
-            texinfo
-
-      - name: Show MSYS2 location
-        shell: pwsh
-        env:
-          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: |
-          Write-Host "MSYS2_LOCATION=$env:MSYS2_LOCATION"
-          Write-Host "ImageOS=$env:ImageOS"
-          Write-Host "ImageVersion=$env:ImageVersion"
-
-      - name: Environment fingerprint
-        run: |
-          set -e
-
-          {
-            echo "=============================="
-            echo "GIT"
-            echo "=============================="
-            git rev-parse HEAD
-            git status --short
-            git submodule status --recursive
-
-            echo
-            echo "=============================="
-            echo "MSYS2"
-            echo "=============================="
-            echo "MSYSTEM=$MSYSTEM"
-            echo "MINGW_PREFIX=$MINGW_PREFIX"
-            echo "MINGW_CHOST=$MINGW_CHOST"
-            echo "MSYSTEM_CARCH=$MSYSTEM_CARCH"
-            echo "CFLAGS=$CFLAGS"
-            echo "MATRIX_VARIANT=${{ matrix.variant }}"
-            uname -a
-
-            echo
-            echo "=============================="
-            echo "PATH"
-            echo "=============================="
-            printf '%s\n' "$PATH"
-
-            echo
-            echo "=============================="
-            echo "COMPILER"
-            echo "=============================="
-            which gcc
-            gcc --version
-            gcc -v
-
-            echo
-            echo "=============================="
-            echo "LINKER"
-            echo "=============================="
-            which ld
-            ld --version
-
-            echo
-            echo "=============================="
-            echo "BINUTILS"
-            echo "=============================="
-            objdump --version
-            nm --version
-
-            echo
-            echo "=============================="
-            echo "BUILD TOOLS"
-            echo "=============================="
-            make --version
-            autoconf --version | head -1
-            automake --version | head -1
-            libtool --version | head -1
-            pkg-config --version
-
-            echo
-            echo "=============================="
-            echo "DEPENDENCY VERSIONS"
-            echo "=============================="
-            pkg-config --modversion libusb-1.0 || true
-            pkg-config --modversion libftdi1 || true
-            pkg-config --modversion hidapi || true
-            pkg-config --modversion libjaylink || true
-
-            echo
-            echo "=============================="
-            echo "INSTALLED PACKAGES"
-            echo "=============================="
-            pacman -Q
-
-            echo
-            echo "=============================="
-            echo "ENVIRONMENT"
-            echo "=============================="
-            env | sort
-
-          } | tee build-fingerprint.txt
-
-      - name: Bootstrap
-        run: |
-          set -e
-          ./bootstrap
-
-      - name: Configure
-        run: |
-          set -o pipefail
-
-          echo "================================"
-          echo "Build variant: ${{ matrix.variant }}"
-          echo "CFLAGS=$CFLAGS"
-          echo "================================"
-
-          ./configure \
-            --prefix=/mingw64 \
-            --enable-internal-jimtcl \
-            2>&1 | tee configure-output.txt
-
-      - name: Verify compiler flags
-        run: |
-          set -e
-
-          {
-            echo "================================"
-            echo "VARIANT"
-            echo "================================"
-            echo "${{ matrix.variant }}"
-
-            echo
-            echo "================================"
-            echo "ENVIRONMENT CFLAGS"
-            echo "================================"
-            echo "$CFLAGS"
-
-            echo
-            echo "================================"
-            echo "OPENOCD MAKEFILE FLAGS"
-            echo "================================"
-            grep -E '^(CFLAGS|CPPFLAGS)[[:space:]]*=' Makefile || true
-
-            echo
-            echo "================================"
-            echo "JIMTCL MAKEFILE FLAGS"
-            echo "================================"
-            grep -E '^(CFLAGS|CPPFLAGS|AS_CFLAGS|AS_CPPFLAGS)[[:space:]]*=' \
-              jimtcl/Makefile || true
-
-          } | tee compiler-flags.txt
-
-      - name: Save configure summary
-        if: always()
-        run: |
-          {
-            echo "=============================="
-            echo "JimTcl"
-            echo "=============================="
-
-            grep -i -E 'jim|jimtcl' config.log || true
-
-            echo
-            echo "=============================="
-            echo "libusb"
-            echo "=============================="
-
-            grep -i 'libusb' config.log | tail -100 || true
-
-            echo
-            echo "=============================="
-            echo "libftdi"
-            echo "=============================="
-
-            grep -i 'libftdi' config.log | tail -100 || true
-
-          } > configure-details.txt
-
-      - name: Build
-        run: |
-          set -o pipefail
-
-          make V=1 -j"$(nproc)" \
-            2>&1 | tee build-output.txt
-
-      - name: Inspect built executable
-        run: |
-          set -e
-
-          {
-            echo "=============================="
-            echo "FILE"
-            echo "=============================="
-            file ./src/openocd.exe
-
-            echo
-            echo "=============================="
-            echo "VERSION"
-            echo "=============================="
-            ./src/openocd.exe --version
-
-            echo
-            echo "=============================="
-            echo "BUILD VARIANT"
-            echo "=============================="
-            echo "variant=${{ matrix.variant }}"
-            echo "CFLAGS=$CFLAGS"
-
-            echo
-            echo "=============================="
-            echo "PE DLL IMPORTS"
-            echo "=============================="
-            objdump -p ./src/openocd.exe |
-              awk '/DLL Name:/{print $3}'
-
-            echo
-            echo "=============================="
-            echo "GCC RUNTIME"
-            echo "=============================="
-            gcc -print-file-name=libgcc_s_seh-1.dll
-            gcc -print-file-name=libwinpthread-1.dll
-
-            echo
-            echo "=============================="
-            echo "JIM SYMBOLS"
-            echo "=============================="
-            nm -C ./src/openocd.exe |
-              grep -E 'JimInvokeCommand|Jim_EvalFile|Jim_Eval|Jim_Init|Jim_CreateInterp|Jim_DecrRefCount' |
-              head -200 || true
-
-          } | tee binary-info.txt
-
-      #
-      # Do several tests separately.
-      #
-      # Do NOT let one crash stop diagnostics.
-      #
-      - name: Test command execution
-        continue-on-error: true
-        run: |
-          set +e
-
-          ./src/openocd.exe \
-            -d3 \
-            -c "echo COMMAND_OK" \
-            -c "shutdown"
-
-          code=$?
-
-          echo "exit_code=$code" |
-            tee command-test.txt
-
-          exit 0
-
-      - name: Test empty config file
-        continue-on-error: true
-        run: |
-          set +e
-
-          : > empty.cfg
-
-          ./src/openocd.exe \
-            -d3 \
-            -f empty.cfg \
-            -c "shutdown" \
-            > empty-config.txt 2>&1
-
-          code=$?
-
-          cat empty-config.txt
-
-          echo >> empty-config.txt
-          echo "exit_code=$code" |
-            tee -a empty-config.txt
-
-          exit 0
-
-      - name: Test simple config file
-        continue-on-error: true
-        run: |
-          set +e
-
-          printf 'echo FILE_READ_OK\n' > simple.cfg
-
-          ./src/openocd.exe \
-            -d3 \
-            -f simple.cfg \
-            -c "shutdown" \
-            > simple-config.txt 2>&1
-
-          code=$?
-
-          cat simple-config.txt
-
-          echo >> simple-config.txt
-          echo "exit_code=$code" |
-            tee -a simple-config.txt
-
-          exit 0
-
-      #
-      # This is especially useful:
-      #
-      # -f and "script" should go through essentially the same OpenOCD/Jim
-      # script path, whereas direct Jim source gives us another comparison.
-      #
-      - name: Compare script paths
-        continue-on-error: true
-        run: |
-          set +e
-
-          printf 'echo SCRIPT_PATH_OK\n' > script-path.cfg
-
-          {
-            echo "=============================="
-            echo "-f"
-            echo "=============================="
-
-            ./src/openocd.exe \
-              -d3 \
-              -f script-path.cfg \
-              -c "shutdown"
-
-            echo "-f exit=$?"
-
-            echo
-            echo "=============================="
-            echo "-c script"
-            echo "=============================="
-
-            ./src/openocd.exe \
-              -d3 \
-              -c "script script-path.cfg" \
-              -c "shutdown"
-
-            echo "script exit=$?"
-
-            echo
-            echo "=============================="
-            echo "-c source"
-            echo "=============================="
-
-            ./src/openocd.exe \
-              -d3 \
-              -c "source script-path.cfg" \
-              -c "shutdown"
-
-            echo "source exit=$?"
-
-          } 2>&1 | tee script-paths.txt
-
-          exit 0
-
-      #
-      # Run the minimal file reproducer under GDB.
-      #
-      - name: GDB backtrace for empty config
-        continue-on-error: true
-        run: |
-          set +e
-
-          : > gdb-empty.cfg
-
-          gdb \
-            -q \
-            -batch \
-            -ex 'set pagination off' \
-            -ex 'set print thread-events off' \
-            -ex 'set print pretty on' \
-            -ex 'set disassemble-next-line on' \
-            -ex 'set confirm off' \
-            -ex 'run' \
-            -ex 'echo \n===== CURRENT FRAME =====\n' \
-            -ex 'frame 0' \
-            -ex 'echo \n===== BACKTRACE =====\n' \
-            -ex 'bt' \
-            -ex 'echo \n===== ALL THREADS =====\n' \
-            -ex 'thread apply all bt full' \
-            -ex 'echo \n===== FRAME 0 ARGS =====\n' \
-            -ex 'info args' \
-            -ex 'echo \n===== FRAME 0 LOCALS =====\n' \
-            -ex 'info locals' \
-            -ex 'echo \n===== SOURCE =====\n' \
-            -ex 'list' \
-            -ex 'echo \n===== REGISTERS =====\n' \
-            -ex 'info registers' \
-            -ex 'echo \n===== PC INSTRUCTIONS =====\n' \
-            -ex 'x/48i $pc-64' \
-            -ex 'echo \n===== JIM INVOKE DISASSEMBLY =====\n' \
-            -ex 'disassemble /m JimInvokeCommand' \
-            --args \
-            ./src/openocd.exe \
-              -d3 \
-              -f gdb-empty.cfg \
-              -c "shutdown" \
-            2>&1 | tee gdb-empty.txt
-
-          exit 0
-
-      #
-      # Test your FTDI config parsing without init.
-      # No USB device is required for this.
-      #
-      - name: Test FTDI config parsing
-        continue-on-error: true
-        run: |
-          set +e
-
-          cat > ftdi-test.cfg <<'EOF'
-          adapter speed 1500
-          adapter driver ftdi
-          ftdi vid_pid 0x0403 0x6010
-          ftdi channel 1
-          transport select jtag
-
-          ftdi layout_init 0x0018 0x001b
-
-          ftdi layout_signal nSRST -oe 0x0200
-          ftdi layout_signal nTRST -data 0x0100 -oe 0x0100
-
-          ftdi layout_signal TCK -data 0x0001
-          ftdi layout_signal TDI -data 0x0002
-          ftdi layout_signal TDO -input 0x0004
-          ftdi layout_signal TMS -data 0x0008
-          EOF
-
-          ./src/openocd.exe \
-            -d3 \
-            -f ftdi-test.cfg \
-            -c "shutdown" \
-            > ftdi-test.txt 2>&1
-
-          code=$?
-
-          cat ftdi-test.txt
-
-          echo >> ftdi-test.txt
-          echo "exit_code=$code" |
-            tee -a ftdi-test.txt
-
-          exit 0
-
-      - name: GDB backtrace for FTDI config
-        continue-on-error: true
-        run: |
-          set +e
-
-          gdb \
-            -q \
-            -batch \
-            -ex 'set pagination off' \
-            -ex 'set print thread-events off' \
-            -ex 'set print pretty on' \
-            -ex 'set disassemble-next-line on' \
-            -ex 'set confirm off' \
-            -ex 'run' \
-            -ex 'echo \n===== CURRENT FRAME =====\n' \
-            -ex 'frame 0' \
-            -ex 'echo \n===== BACKTRACE =====\n' \
-            -ex 'bt' \
-            -ex 'echo \n===== ALL THREADS =====\n' \
-            -ex 'thread apply all bt full' \
-            -ex 'echo \n===== FRAME 0 ARGS =====\n' \
-            -ex 'info args' \
-            -ex 'echo \n===== FRAME 0 LOCALS =====\n' \
-            -ex 'info locals' \
-            -ex 'echo \n===== SOURCE =====\n' \
-            -ex 'list' \
-            -ex 'echo \n===== REGISTERS =====\n' \
-            -ex 'info registers' \
-            -ex 'echo \n===== PC INSTRUCTIONS =====\n' \
-            -ex 'x/48i $pc-64' \
-            -ex 'echo \n===== JIM INVOKE DISASSEMBLY =====\n' \
-            -ex 'disassemble /m JimInvokeCommand' \
-            --args \
-            ./src/openocd.exe \
-              -d3 \
-              -f ftdi-test.cfg \
-              -c "shutdown" \
-            2>&1 | tee gdb-ftdi.txt
-
-          exit 0
-
-      #
-      # Build artifact even if one of diagnostic test runs crashed.
-      #
-      - name: Stage install
-        if: always()
-        run: |
-          rm -rf stage
-          make install DESTDIR="$(pwd)/stage"
-
-      - name: Bundle runtime DLLs
-        if: always()
-        run: |
-          set -e
-
-          DEST="$(pwd)/stage/mingw64/bin"
-
-          declare -a queue
-          declare -A processed
-
-          queue=("$DEST/openocd.exe")
-
-          while [ "${#queue[@]}" -gt 0 ]; do
-            file="${queue[0]}"
-            queue=("${queue[@]:1}")
-
-            file_key="$(cygpath -aw "$file" |
-              tr '[:upper:]' '[:lower:]')"
-
-            if [ -n "${processed[$file_key]+x}" ]; then
-              continue
-            fi
-
-            processed["$file_key"]=1
-
-            while read -r dll; do
-              [ -n "$dll" ] || continue
-
-              source_dll="$(find /mingw64/bin \
-                -maxdepth 1 \
-                -type f \
-                -iname "$dll" \
-                -print \
-                -quit)"
-
-              if [ -z "$source_dll" ]; then
-                continue
-              fi
-
-              dest_dll="$DEST/$(basename "$source_dll")"
-
-              if [ ! -f "$dest_dll" ]; then
-                echo "Bundling $(basename "$source_dll")"
-                cp "$source_dll" "$dest_dll"
-              fi
-
-              queue+=("$dest_dll")
-
-            done < <(
-              objdump -p "$file" |
-                awk '/DLL Name:/{print $3}'
-            )
-          done
-
-          ls -lah "$DEST"
-
-      - name: Upload reference build
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: openocd-windows-x86_64-reference-${{ matrix.variant }}
-          path: stage/mingw64
-
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: openocd-windows-x86_64-diagnostics-${{ matrix.variant }}
           path: |
-            build-fingerprint.txt
-            compiler-flags.txt
-            configure-output.txt
-            configure-details.txt
-            build-output.txt
-            binary-info.txt
-            command-test.txt
-            empty-config.txt
-            simple-config.txt
-            script-paths.txt
-            ftdi-test.txt
-            gdb-empty.txt
-            gdb-ftdi.txt
-            config.log
+            dist/openocd-windows-x86_64.tar.gz
+            dist/openocd-windows-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0

@@ -16,7 +16,7 @@ fi
 
 yum install -y \
   autoconf automake libtool pkgconfig texinfo \
-  systemd-devel git wget curl tar bzip2 xz \
+  systemd-devel git wget curl tar bzip2 xz zip \
   gcc gcc-c++ make python3 python3-pip
 
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
@@ -50,8 +50,8 @@ mkdir -p libftdi1-1.5/build
 (
   cd libftdi1-1.5/build
   # libftdi1 does not use GNUInstallDirs; it has its own LIB_SUFFIX
-  # variable that defaults to "64" on any 64-bit RHEL/CentOS-family
-  # host (manylinux2014 qualifies on both x86_64 and arm64), so
+  # variable that defaults to "64" on a 64-bit RHEL/CentOS-family
+  # host (including manylinux2014), so
   # CMAKE_INSTALL_LIBDIR above has no effect on it.
   cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib -DLIB_SUFFIX= -DCMAKE_BUILD_TYPE=Release -DFTDI_EEPROM=OFF ..
   make -j"$(nproc)"
