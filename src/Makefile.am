@@ -7,7 +7,7 @@ bin_PROGRAMS += %D%/openocd
 	%D%/main.c
 
 %C%_libopenocd_la_SOURCES = \
-	%D%/hello.c %D%/hello.h \
+	%D%/hello.c %D%/hello.h %D%/openocd_build_name.h \
 	%D%/openocd.c %D%/openocd.h
 
 %C%_openocd_LDADD = %D%/libopenocd.la

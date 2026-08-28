@@ -1,0 +1,1 @@
+#define OPENOCD_BUILD_NAME ""

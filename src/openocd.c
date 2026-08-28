@@ -16,6 +16,7 @@
 #endif
 
 #include "openocd.h"
+#include "openocd_build_name.h"
 #include <jtag/adapter.h>
 #include <jtag/jtag.h>
 #include <transport/transport.h>
@@ -44,6 +45,43 @@
 #define OPENOCD_VERSION	\
 	"Open On-Chip Debugger " VERSION RELSTR
 #endif
+
+static bool command_line_requests_version(int argc, char *argv[])
+{
+	for (int i = 1; i < argc; i++) {
+		const char *arg = argv[i];
+
+		if (!strcmp(arg, "--"))
+			break;
+		if (!strcmp(arg, "--version"))
+			return true;
+
+		if (!strcmp(arg, "--file") || !strcmp(arg, "--search") ||
+				!strcmp(arg, "--log_output") || !strcmp(arg, "--command")) {
+			i++;
+			continue;
+		}
+
+		if (arg[0] != '-' || arg[1] == '\0' || arg[1] == '-')
+			continue;
+
+		for (const char *option = arg + 1; *option; option++) {
+			if (*option == 'v')
+				return true;
+
+			if (*option == 'd')
+				break;
+
+			if (strchr("lfsc", *option)) {
+				if (option[1] == '\0')
+					i++;
+				break;
+			}
+		}
+	}
+
+	return false;
+}
 
 static const char openocd_startup_tcl[] = {
 #include "startup_tcl.inc"
@@ -232,7 +270,8 @@ static int openocd_register_commands(struct command_context *cmd_ctx)
 
 struct command_context *global_cmd_ctx;
 
-static struct command_context *setup_command_handler(Jim_Interp *interp)
+static struct command_context *setup_command_handler(Jim_Interp *interp,
+	bool show_build_name)
 {
 	log_init();
 	LOG_DEBUG("log_init: complete");
@@ -267,8 +306,9 @@ static struct command_context *setup_command_handler(Jim_Interp *interp)
 	}
 	LOG_DEBUG("command registration: complete");
 
-	LOG_OUTPUT(OPENOCD_VERSION "\n"
-		"Licensed under GNU GPL v2\n");
+	LOG_OUTPUT(OPENOCD_VERSION "%s\n"
+		"Licensed under GNU GPL v2\n",
+		show_build_name ? OPENOCD_BUILD_NAME : "");
 
 	global_cmd_ctx = cmd_ctx;
 
@@ -331,7 +371,8 @@ int openocd_main(int argc, char *argv[])
 	/* initialize commandline interface */
 	struct command_context *cmd_ctx;
 
-	cmd_ctx = setup_command_handler(NULL);
+	cmd_ctx = setup_command_handler(NULL,
+		command_line_requests_version(argc, argv));
 
 	if (util_init(cmd_ctx) != ERROR_OK)
 		return EXIT_FAILURE;

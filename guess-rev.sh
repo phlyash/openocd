@@ -41,7 +41,7 @@ if head=`git rev-parse --verify --short HEAD 2>/dev/null`; then
 	[ -w . ] && git update-index --refresh --unmerged > /dev/null
 
 	# Check for uncommitted changes
-	if git diff-index --name-only HEAD | grep -v "^scripts/package" \
+	if git diff-index --name-only HEAD | grep -Ev "^(scripts/package|src/openocd_build_name\.h$)" \
 	    | read dummy; then
 		printf '%s' -dirty
 	fi
