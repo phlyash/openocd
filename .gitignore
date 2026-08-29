@@ -120,3 +120,6 @@ compile_commands.json
 
 # Claude Code superpowers scratch workspace (plan ledgers, review packages)
 .superpowers/
+
+# Isolated implementation branches
+.worktrees/
