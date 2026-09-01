@@ -92,6 +92,12 @@ EXPECTED_PERMISSIONS_SECTION = """permissions:
 
 """
 
+EXPECTED_RELEASE_NEEDS = """    needs:
+      - macos-aarch64
+      - linux-x86_64
+      - windows-x86_64
+"""
+
 
 def job_block(workflow, name):
     """Extract only a same-indent job definition, excluding later jobs."""
@@ -121,16 +127,11 @@ def assert_top_level_section_contract(test_case, workflow, name, expected):
     test_case.assertEqual(match.group(0), expected)
 
 
-def job_needs(job):
-    """Return literal job dependency names from scalar, inline, or block YAML forms."""
-    match = re.search(
-        r"(?m)^    needs:(?:(?P<scalar> [^\n]+)|\n(?P<block>(?:      - [^\n]+\n?)*))",
-        job,
+def job_level_field(job, name):
+    """Extract one job-level YAML field through the following job-level field."""
+    return re.search(
+        rf"(?ms)^    {re.escape(name)}:\n.*?(?=^    [A-Za-z0-9_-]+:|\Z)", job
     )
-    if match is None:
-        return []
-    values = match.group("scalar") or match.group("block")
-    return re.findall(r"[A-Za-z0-9_-]+", values)
 
 
 def assert_complete_workflow_contract(test_case, workflow):
@@ -143,10 +144,15 @@ def assert_complete_workflow_contract(test_case, workflow):
         test_case, workflow, "test-publisher-client", EXPECTED_TEST_PUBLISHER_CLIENT_JOB
     )
     assert_job_contract(test_case, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
-    for name in ("macos-aarch64", "linux-x86_64", "windows-x86_64", "release", "deploy-beget"):
+    for name in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
         match = job_block(workflow, name)
         test_case.assertIsNotNone(match, f"{name} job is missing")
-        test_case.assertNotIn("test-publisher-client", job_needs(match.group(0)))
+        test_case.assertNotRegex(match.group(0), r"(?m)^    needs:")
+    release = job_block(workflow, "release")
+    test_case.assertIsNotNone(release, "release job is missing")
+    release_needs = job_level_field(release.group(0), "needs")
+    test_case.assertIsNotNone(release_needs, "release needs field is missing")
+    test_case.assertEqual(release_needs.group(0), EXPECTED_RELEASE_NEEDS)
 
 
 def replace_in_job(workflow, name, old, new):
@@ -449,6 +455,17 @@ class PrepareBegetReleaseTests(unittest.TestCase):
             "macos-aarch64",
             "    runs-on: macos-14\n",
             "    needs: test-publisher-client\n    runs-on: macos-14\n",
+        )
+        with self.assertRaises(AssertionError):
+            assert_complete_workflow_contract(self, workflow)
+
+    def test_complete_contract_rejects_multiline_flow_platform_dependency(self):
+        """A multiline flow-style dependency also gates the macOS build."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "macos-aarch64",
+            "    runs-on: macos-14\n",
+            "    needs: [\n      test-publisher-client\n    ]\n    runs-on: macos-14\n",
         )
         with self.assertRaises(AssertionError):
             assert_complete_workflow_contract(self, workflow)
