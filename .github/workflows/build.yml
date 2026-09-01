@@ -536,10 +536,12 @@ jobs:
           merge-multiple: true
 
       - name: Prepare Beget bundle
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           python3 .github/scripts/prepare-beget-release.py
           --type openocd
-          --tag "${{ inputs.release_tag }}"
+          --tag "$RELEASE_TAG"
           --repository "$GITHUB_REPOSITORY"
           --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           --input release-assets
