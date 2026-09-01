@@ -70,6 +70,28 @@ EXPECTED_DEPLOY_BEGET_JOB = """  deploy-beget:
         run: bash .github/scripts/deploy-beget-release.sh beget-upload
 """
 
+EXPECTED_ON_SECTION = """on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_name:
+        description: Name appended to the openocd --version output
+        required: true
+        type: string
+      release_tag:
+        description: Git tag used for the published GitHub Release
+        required: true
+        type: string
+
+"""
+
+EXPECTED_PERMISSIONS_SECTION = """permissions:
+  contents: read
+
+"""
+
 
 def job_block(workflow, name):
     """Extract only a same-indent job definition, excluding later jobs."""
@@ -83,6 +105,48 @@ def assert_job_contract(test_case, workflow, name, expected):
     match = job_block(workflow, name)
     test_case.assertIsNotNone(match, f"{name} job is missing")
     test_case.assertEqual(match.group(0), expected)
+
+
+def top_level_section(workflow, name):
+    """Extract one zero-indent YAML section without consuming its neighbours."""
+    return re.search(
+        rf"(?ms)^{re.escape(name)}:\n.*?(?=^[A-Za-z0-9_-]+:\n|\Z)", workflow
+    )
+
+
+def assert_top_level_section_contract(test_case, workflow, name, expected):
+    """Require one exact zero-indent YAML section contract."""
+    match = top_level_section(workflow, name)
+    test_case.assertIsNotNone(match, f"{name} section is missing")
+    test_case.assertEqual(match.group(0), expected)
+
+
+def job_needs(job):
+    """Return literal job dependency names from scalar, inline, or block YAML forms."""
+    match = re.search(
+        r"(?m)^    needs:(?:(?P<scalar> [^\n]+)|\n(?P<block>(?:      - [^\n]+\n?)*))",
+        job,
+    )
+    if match is None:
+        return []
+    values = match.group("scalar") or match.group("block")
+    return re.findall(r"[A-Za-z0-9_-]+", values)
+
+
+def assert_complete_workflow_contract(test_case, workflow):
+    """Assert the complete trigger, permission, fast-job, and deploy-job contract."""
+    assert_top_level_section_contract(test_case, workflow, "on", EXPECTED_ON_SECTION)
+    assert_top_level_section_contract(
+        test_case, workflow, "permissions", EXPECTED_PERMISSIONS_SECTION
+    )
+    assert_job_contract(
+        test_case, workflow, "test-publisher-client", EXPECTED_TEST_PUBLISHER_CLIENT_JOB
+    )
+    assert_job_contract(test_case, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
+    for name in ("macos-aarch64", "linux-x86_64", "windows-x86_64", "release", "deploy-beget"):
+        match = job_block(workflow, name)
+        test_case.assertIsNotNone(match, f"{name} job is missing")
+        test_case.assertNotIn("test-publisher-client", job_needs(match.group(0)))
 
 
 def replace_in_job(workflow, name, old, new):
@@ -367,6 +431,37 @@ class PrepareBegetReleaseTests(unittest.TestCase):
         workflow += "\n  later-job:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/download-artifact@v4\n"
         with self.assertRaises(AssertionError):
             assert_job_contract(self, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
+
+    def test_complete_contract_rejects_missing_pull_request_trigger(self):
+        """The fast client job must remain available to pull requests."""
+        workflow = WORKFLOW.read_text().replace("  pull_request:\n", "", 1)
+        with self.assertRaises(AssertionError):
+            assert_complete_workflow_contract(self, workflow)
+
+    def test_complete_workflow_contract(self):
+        """The committed workflow must retain the complete publishing contract."""
+        assert_complete_workflow_contract(self, WORKFLOW.read_text())
+
+    def test_complete_contract_rejects_platform_dependency_on_fast_client(self):
+        """Platform builds cannot be gated behind the independent client signal."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "macos-aarch64",
+            "    runs-on: macos-14\n",
+            "    needs: test-publisher-client\n    runs-on: macos-14\n",
+        )
+        with self.assertRaises(AssertionError):
+            assert_complete_workflow_contract(self, workflow)
+
+    def test_complete_contract_rejects_workflow_contents_write(self):
+        """The workflow default must stay read-only for the publisher client."""
+        workflow = WORKFLOW.read_text().replace(
+            "permissions:\n  contents: read\n",
+            "permissions:\n  contents: write\n",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_complete_workflow_contract(self, workflow)
 
 
 if __name__ == "__main__":
