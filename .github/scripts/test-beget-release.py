@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / ".github" / "scripts" / "prepare-beget-release.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
 FILES = {
     "openocd-linux-x86_64.tar.gz": ("linux", "x86_64", "tar.gz"),
     "openocd-linux-x86_64.zip": ("linux", "x86_64", "zip"),
@@ -22,6 +24,73 @@ FILES = {
     "openocd-windows-x86_64.tar.gz": ("windows", "x86_64", "tar.gz"),
     "openocd-windows-x86_64.zip": ("windows", "x86_64", "zip"),
 }
+
+EXPECTED_TEST_PUBLISHER_CLIENT_JOB = """  test-publisher-client:
+    name: Test package publisher client
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/test-beget-release.py
+      - run: bash .github/scripts/test-deploy-beget.sh
+
+"""
+
+EXPECTED_DEPLOY_BEGET_JOB = """  deploy-beget:
+    name: Publish release to Beget
+    if: github.event_name == 'workflow_dispatch'
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: openocd-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare Beget bundle
+        run: >-
+          python3 .github/scripts/prepare-beget-release.py
+          --type openocd
+          --tag "${{ inputs.release_tag }}"
+          --repository "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          --input release-assets
+          --output beget-upload
+
+      - name: Upload and publish on Beget
+        env:
+          BEGET_HOST: ${{ secrets.BEGET_HOST }}
+          BEGET_PORT: ${{ secrets.BEGET_PORT }}
+          BEGET_USER: ${{ secrets.BEGET_USER }}
+          BEGET_SSH_PRIVATE_KEY: ${{ secrets.BEGET_SSH_PRIVATE_KEY }}
+          BEGET_KNOWN_HOSTS: ${{ secrets.BEGET_KNOWN_HOSTS }}
+        run: bash .github/scripts/deploy-beget-release.sh beget-upload
+"""
+
+
+def job_block(workflow, name):
+    """Extract only a same-indent job definition, excluding later jobs."""
+    return re.search(
+        rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)", workflow
+    )
+
+
+def assert_job_contract(test_case, workflow, name, expected):
+    """Require one exact, indentation-sensitive workflow job contract."""
+    match = job_block(workflow, name)
+    test_case.assertIsNotNone(match, f"{name} job is missing")
+    test_case.assertEqual(match.group(0), expected)
+
+
+def replace_in_job(workflow, name, old, new):
+    """Return a fixture where one fragment changes inside one named job block."""
+    match = job_block(workflow, name)
+    if match is None:
+        raise AssertionError(f"{name} job is missing from fixture")
+    return workflow[:match.start()] + match.group(0).replace(old, new, 1) + workflow[match.end():]
 
 
 class PrepareBegetReleaseTests(unittest.TestCase):
@@ -236,6 +305,68 @@ class PrepareBegetReleaseTests(unittest.TestCase):
             self.assert_failure_without_manifest(
                 self.run_builder(source, output, repository="phlyash/other-openocd"), output
             )
+
+    def test_fast_client_job_runs_both_local_publisher_tests(self):
+        """A fast Ubuntu job must execute both local publisher client suites."""
+        assert_job_contract(
+            self,
+            WORKFLOW.read_text(),
+            "test-publisher-client",
+            EXPECTED_TEST_PUBLISHER_CLIENT_JOB,
+        )
+
+    def test_fast_client_contract_rejects_action_text_in_a_later_job(self):
+        """A checkout mention outside this job cannot make the fast contract pass."""
+        workflow = WORKFLOW.read_text()
+        workflow = replace_in_job(
+            workflow,
+            "test-publisher-client",
+            "      - uses: actions/checkout@v4\n",
+            "      - run: echo 'uses: actions/checkout@v4'\n",
+        )
+        workflow += "\n  later-job:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n"
+        with self.assertRaises(AssertionError):
+            assert_job_contract(
+                self, workflow, "test-publisher-client", EXPECTED_TEST_PUBLISHER_CLIENT_JOB
+            )
+
+    def test_manual_release_deploy_job_builds_and_transports_same_run_artifacts(self):
+        """A manual post-release job must match the complete OpenOCD publisher contract."""
+        assert_job_contract(self, WORKFLOW.read_text(), "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
+
+    def test_deploy_contract_rejects_commented_job_if(self):
+        """Commenting manual-only gating must not be accepted as an active job field."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "deploy-beget",
+            "    if: github.event_name == 'workflow_dispatch'\n",
+            "    # if: github.event_name == 'workflow_dispatch'\n",
+        )
+        with self.assertRaises(AssertionError):
+            assert_job_contract(self, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
+
+    def test_deploy_contract_rejects_misindented_job_needs(self):
+        """A dependency nested under another field is not a job-level release dependency."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "deploy-beget",
+            "    needs: release\n",
+            "      needs: release\n",
+        )
+        with self.assertRaises(AssertionError):
+            assert_job_contract(self, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
+
+    def test_deploy_contract_rejects_download_action_text_in_shell_or_later_job(self):
+        """Only the deploy step itself may supply its required artifact action."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "deploy-beget",
+            "        uses: actions/download-artifact@v4\n",
+            "        run: echo 'uses: actions/download-artifact@v4'\n",
+        )
+        workflow += "\n  later-job:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/download-artifact@v4\n"
+        with self.assertRaises(AssertionError):
+            assert_job_contract(self, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
 
 
 if __name__ == "__main__":
