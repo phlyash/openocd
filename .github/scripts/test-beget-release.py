@@ -143,6 +143,11 @@ def assert_complete_workflow_contract(test_case, workflow):
     assert_job_contract(
         test_case, workflow, "test-publisher-client", EXPECTED_TEST_PUBLISHER_CLIENT_JOB
     )
+    test_case.assertEqual(
+        workflow.count("test-publisher-client"),
+        1,
+        "test-publisher-client must occur only in its own job declaration",
+    )
     assert_job_contract(test_case, workflow, "deploy-beget", EXPECTED_DEPLOY_BEGET_JOB)
     for name in ("macos-aarch64", "linux-x86_64", "windows-x86_64"):
         match = job_block(workflow, name)
@@ -466,6 +471,17 @@ class PrepareBegetReleaseTests(unittest.TestCase):
             "macos-aarch64",
             "    runs-on: macos-14\n",
             "    needs: [\n      test-publisher-client\n    ]\n    runs-on: macos-14\n",
+        )
+        with self.assertRaises(AssertionError):
+            assert_complete_workflow_contract(self, workflow)
+
+    def test_complete_contract_rejects_quoted_key_platform_dependency(self):
+        """A quoted YAML needs key still gates the macOS build."""
+        workflow = replace_in_job(
+            WORKFLOW.read_text(),
+            "macos-aarch64",
+            "    runs-on: macos-14\n",
+            '    "needs": test-publisher-client\n    runs-on: macos-14\n',
         )
         with self.assertRaises(AssertionError):
             assert_complete_workflow_contract(self, workflow)
